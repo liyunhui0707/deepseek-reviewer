@@ -1,0 +1,30 @@
+name: Publish release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Approved version, e.g. 1.0.0 (without v)'
+        required: true
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate requested version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          PYTHONPATH=src python3 -c 'import os; from deepseek_reviewer import __version__; assert os.environ["REQUESTED_VERSION"] == __version__'
+      - run: PYTHONPATH=src python3 -m unittest discover -s tests -v
+      - run: python3 scripts/build.py
+      - run: python3 scripts/check_release.py
+      - name: Publish the approved artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: gh release create "v$REQUESTED_VERSION" dist/deepseek-reviewer.pyz dist/SHA256SUMS dist/release.json --target "$GITHUB_SHA" --title "DeepSeek Reviewer $REQUESTED_VERSION" --notes-file CHANGELOG.md

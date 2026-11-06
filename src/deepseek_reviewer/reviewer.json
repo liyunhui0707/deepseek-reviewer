@@ -1,0 +1,24 @@
+{
+  "disableAllHooks": true,
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "allow": [],
+    "deny": [
+      "Bash",
+      "PowerShell",
+      "Edit",
+      "Write",
+      "NotebookEdit",
+      "WebFetch",
+      "WebSearch",
+      "Task",
+      "Agent",
+      "Skill",
+      "LSP",
+      "mcp__*",
+      "Read(//**/.env)",
+      "Read(//**/.env.*)",
+      "Read(//**/secrets/**)"
+    ]
+  }
+}
