@@ -4,7 +4,7 @@
 
 Codex prepares a scoped review. Claude Code runs DeepSeek with read-only file tools. Findings return to the same Codex session for verification and action.
 
-[Website](https://deepseek-reviewer.outerepoch3.chatgpt.site) · [Releases](https://github.com/liyunhui0707/deepseek-reviewer/releases) · [中文使用说明](docs/guide.zh-CN.md) · [Security & privacy](SECURITY.md) · [Release notes](CHANGELOG.md)
+[Website](https://deepseek-reviewer.outerepoch3.chatgpt.site) · [Download v1.1.0](https://github.com/liyunhui0707/deepseek-reviewer/releases/tag/v1.1.0) · [中文使用说明](docs/guide.zh-CN.md) · [Security & privacy](SECURITY.md) · [Release notes](CHANGELOG.md)
 
 ```text
 Your Codex session → approved snapshot → Claude Code Restricted + DeepSeek

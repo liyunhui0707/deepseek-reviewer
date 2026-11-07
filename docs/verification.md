@@ -38,3 +38,12 @@ The maintainer approved version 1.1.0 on 2026-11-07. The module, project metadat
 - No user installation, global configuration, public Release or website deployment was changed. Public download links still refer to v1.0.0.
 
 The release workflow rebuilds the archive. Its future output must be checked and its own checksum recorded; the local candidate checksum is not a claim about an unpublished CI artifact. Browser viewport, second-Mac and real-provider acceptance limitations above remain unchanged.
+
+## Published 1.1.0
+
+- [Release v1.1.0](https://github.com/liyunhui0707/deepseek-reviewer/releases/tag/v1.1.0) was published from source commit `a68e58b8fd16c182f7a61629087abe22d47ee572`.
+- [Offline CI](https://github.com/liyunhui0707/deepseek-reviewer/actions/runs/42378736057) passed all four macOS/Linux and Python 3.11/3.13 combinations. The [publication workflow](https://github.com/liyunhui0707/deepseek-reviewer/actions/runs/42378839981) also passed its tests, build and installation checks.
+- All three assets were downloaded from the public Release and matched GitHub's asset digests, `release.json` and `SHA256SUMS`. The published archive SHA-256 is `b77eaac41154a0631f432ee48268b2c8e2514f22eb129659e18d020b4c7049ac`; its packaged file contents match the accepted local candidate despite the rebuilt ZIP having a different overall checksum.
+- The downloaded archive passed installation, version, setup, Skill and configuration checks in a disposable HOME using a synthetic Claude executable. No real model or Keychain access occurred, and the maintainer's normal installation was not changed.
+- The [existing public website](https://deepseek-reviewer.outerepoch3.chatgpt.site) was deployed successfully as Site version 2 from website source commit `73141f48a352fa27c9d5c4c2ef445701fc4e2777`. It points to v1.1.0 and includes the new setup command and v1.0.0 migration guidance. The final packaging check accepted exactly four static resources and one hosting manifest, without macOS AppleDouble entries. The original Site identity and public audience were retained.
+- Website installation-command tests, JavaScript syntax, assets and anchor checks passed. Browser access remained unavailable, so real desktop/mobile viewport QA is NOT TESTED. New-Mac paid-provider acceptance remains separate; publication did not perform it.
