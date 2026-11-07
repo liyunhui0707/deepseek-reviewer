@@ -20,8 +20,12 @@ Private application state is under `~/.local/share/deepseek-reviewer`, including
 
 One review launches one Claude process with a finite deadline, turn/output settings and client budget. It can make multiple HTTP requests. Native retries, continuations and billing are not fully observable; client cost estimates and token settings are not provider-side guarantees. Timeout, malformed/truncated capture, a missing final result and unexpected execution evidence do not produce `COMPLETED`.
 
+Normal Ctrl-C/SIGTERM paths stop the subprocess and retain a sanitized failure report. Force-kill, power loss or storage failure may prevent writing a report; an attempt is never reset or automatically resumed. A report's successful Read list is observed tool activity, not proof of full-file coverage. The terminal display strips control characters; JSON remains available for machine readers.
+
 ## Updates and reporting
 
 Only explicit `check-update`/`update` commands contact GitHub. Release hashes verify downloaded bytes against the same publisher's manifest; no independent artifact signing is claimed. No Codex/Claude binary is redistributed.
+
+Installation activation uses a single atomic state replacement; the launcher checks the selected archive before execution. Maintenance uses a process lock and refuses to overlap reviews. Registration replacement requires the current configuration hash and a freshly verified compatible executable; a backup is kept. Skill updates accept only unchanged managed files or the exact original public v1.0.0 Skill, never arbitrary local customizations. These checks do not defend against a malicious process with the same user's access.
 
 Report a vulnerability through [GitHub private vulnerability reporting](https://github.com/liyunhui0707/deepseek-reviewer/security/advisories/new) when available. Otherwise open an issue requesting a private contact without posting exploit secrets, keys, private paths, review logs or source. Include version, safe reproduction and affected boundary.

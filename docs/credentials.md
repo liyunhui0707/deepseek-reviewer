@@ -30,3 +30,5 @@ Approve a matching macOS prompt with **Allow**, never **Always Allow**. Do not p
 Stop active reviews before replacement/removal. Removing the local item does not revoke the remote API key or erase another process's memory. Revoke it separately in the DeepSeek account console if needed.
 
 No real credential is read during `doctor`, `prepare`, installation, updates or the offline test suite.
+
+`setup` also leaves credentials untouched. `LOCAL_READY` is a registration result, not an authentication result. Saving/replacing/removing credentials refuses to overlap an active review or maintenance operation. A setup rerun never replaces your key; use the explicit credential command when you intend to change it.

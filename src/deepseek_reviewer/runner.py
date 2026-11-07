@@ -6,6 +6,7 @@ from pathlib import Path
 import selectors
 import signal
 import subprocess
+import threading
 import time
 from .safety import validate_path, ReviewError
 
@@ -264,6 +265,7 @@ def run_bounded(args, cwd, env, task, timeout=60, *, claude_stream_json=False,
         if not finished and kind != 'heartbeat' and signature == last_signature: return
         notice = {'notification': kind, 'phase': 'finished' if finished else capture.phase,
                   'elapsed_seconds': round(now - started, 3), 'seconds_since_output': round(now - last_output, 3),
+                  'remaining_seconds': max(0, round(timeout - (now - started), 1)),
                   'tool': capture.current_tool, 'file': capture.current_file,
                   'model_responses_observed': len(capture.response_ids),
                   'tool_calls_observed': sum(capture.tool_counts.values()), 'tool_results_observed': capture.tool_results}
@@ -272,10 +274,18 @@ def run_bounded(args, cwd, env, task, timeout=60, *, claude_stream_json=False,
                           exit_code=proc.returncode if proc else None, failure=failure,
                           result_subtype=capture.result_subtype)
         try: on_progress(notice)
+        except AgentStopped:
+            callback_failed = True
+            raise
         except Exception:
             callback_failed = True
             raise AgentStopped('progress_callback_error') from None
         last_notice, last_signature = now, signature
+    previous_sigterm = None
+    def terminate(_signum, _frame):
+        raise AgentStopped('terminated')
+    if threading.current_thread() is threading.main_thread():
+        previous_sigterm = signal.signal(signal.SIGTERM, terminate)
     try:
         proc = subprocess.Popen(args, cwd=cwd, env=env, stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
@@ -304,9 +314,14 @@ def run_bounded(args, cwd, env, task, timeout=60, *, claude_stream_json=False,
         proc.wait(timeout=max(.1, timeout - (time.monotonic() - started)))
         if capture is not None:
             capture.finish()
+    except KeyboardInterrupt:
+        failure = 'cancelled'
+        callback_failed = True
     except (OSError, subprocess.TimeoutExpired, AgentStopped) as exc:
         failure = str(exc) if isinstance(exc, AgentStopped) else type(exc).__name__
     finally:
+        if previous_sigterm is not None:
+            signal.signal(signal.SIGTERM, previous_sigterm)
         streams.close()
         if proc:
             try: os.killpg(proc.pid, signal.SIGTERM)

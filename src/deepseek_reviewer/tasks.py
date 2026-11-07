@@ -7,7 +7,7 @@ import re
 import uuid
 
 from . import __version__
-from .config import app_home, load_runtime, private_directory, fingerprint, ENDPOINT, MODEL
+from .config import app_home, load_runtime, private_directory, private_read, state_lock, ENDPOINT, MODEL
 from .prepare import prepare_claude_review
 from .runner import AgentStopped, private_write, run_bounded
 from .safety import selected_paths, read_selected, safe_text, scan_secrets, ReviewError
@@ -113,19 +113,36 @@ def summarize(result, files, unchanged):
                  and observed.get('execution') == 'completed' and final
                  and tools_ok and model_ok and unchanged)
     status = 'COMPLETED' if completed else 'PARTIAL' if final else 'FAILED'
+    reason = ((observed.get('result_subtype') if result['failure'] == 'claude_result_error' else result['failure'])
+              or (observed.get('result_subtype') if observed.get('result_subtype') != 'success' else None)
+              or ('unexpected_tools' if not tools_ok else None)
+              or ('model_unverified' if not model_ok else None)
+              or ('snapshot_changed' if not unchanged else None)
+              or ('report_withheld' if withheld else None)
+              or ('missing_report' if not final else None))
+    read_files = sorted(set(observed.get('read_results', ())) & set(files))
     stderr = result['stderr']
     return {'status': status, 'started': result['started'], 'exit_code': result['exit_code'],
             'failure': result['failure'], 'duration_seconds': result['duration_seconds'],
+            'stop_reason': reason,
             'tool_boundary_observed': tools_ok, 'model_verified': model_ok,
             'snapshot_unchanged': unchanged, 'credential_like_report_withheld': withheld,
             'stderr_bytes': len(stderr), 'stderr_sha256': digest(stderr),
             'observation': observed, 'approved_files': sorted(files),
             'findings': final, 'quality': 'requires_primary_agent_verification',
             'coverage': 'read tool success does not certify complete review',
+            'coverage_observation': {'successful_read_files': read_files,
+                'no_successful_read_observed': sorted(set(files) - set(read_files)),
+                'complete_review_verified': False},
             'billing': 'client estimate only; HTTP request count and provider bill are unknown'}
 
 
 def execute_plan(path, expected_sha256, progress=None):
+    with state_lock(shared=True):
+        return _execute_plan(path, expected_sha256, progress)
+
+
+def _execute_plan(path, expected_sha256, progress):
     run, plan = load_plan(path, expected_sha256)
     if (run / 'execution').exists():
         raise AgentStopped('attempt_consumed')
@@ -147,3 +164,20 @@ def execute_plan(path, expected_sha256, progress=None):
     private_write(run / 'report.json', report)
     # Original bytes remain memory-only. They are never written to a logfile.
     return {'report_path': str(run / 'report.json'), **report}
+
+
+def read_report(attempt_id):
+    """Read an existing sanitized report, never resume or launch an attempt."""
+    if not re.fullmatch('[a-f0-9]{32}', attempt_id):
+        raise AgentStopped('invalid_attempt_id')
+    root = app_home() / 'reviews' / attempt_id
+    if root.resolve() != root or not root.is_dir(): raise AgentStopped('report_not_found')
+    path = root / 'report.json'
+    if not path.exists():
+        if (root / 'execution').exists():
+            return {'status': 'NO_FINAL_REPORT', 'attempt_id': attempt_id,
+                    'next': 'The attempt may still be running or was interrupted. Do not relaunch it; inspect the original invocation.'}
+        raise AgentStopped('report_not_found')
+    value = json.loads(private_read(path, limit=8 * 1024 * 1024))
+    scan_secrets(value)
+    return {'report_path': str(path), **value}

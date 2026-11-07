@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Approved version, e.g. 1.0.0 (without v)'
+        description: 'Approved version, e.g. 1.1.0 (without v)'
         required: true
 permissions:
   contents: write
