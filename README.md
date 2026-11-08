@@ -4,7 +4,7 @@
 
 Codex prepares a scoped review. Claude Code runs DeepSeek with read-only file tools. Findings return to the same Codex session for verification and action.
 
-[Website](https://deepseek-reviewer.outerepoch3.chatgpt.site) · [Download v1.1.0](https://github.com/liyunhui0707/deepseek-reviewer/releases/tag/v1.1.0) · [中文使用说明](docs/guide.zh-CN.md) · [Security & privacy](SECURITY.md) · [Release notes](CHANGELOG.md)
+[Website](https://deepseek-reviewer.outerepoch3.chatgpt.site) · [Download v1.2.1](https://github.com/liyunhui0707/deepseek-reviewer/releases/tag/v1.2.1) · [中文使用说明](docs/guide.zh-CN.md) · [Security & privacy](SECURITY.md) · [Release notes](CHANGELOG.md)
 
 ```text
 Your Codex session → approved snapshot → Claude Code Restricted + DeepSeek
@@ -31,7 +31,7 @@ This is **static review**, not an automatic acceptance test. Findings need verif
 
 Claude Code and Codex are separate products, **not included** in this distribution. Obtain them from their official publishers. Review [Claude's setup documentation](https://code.claude.com/docs/en/setup) for installation/version management. This product does not install, downgrade, upgrade or log into either CLI.
 
-This guide covers **v1.1.0**. Select matching v1.1.0 assets from the release list; the setup, recovery and display commands below are not available in v1.0.0. Existing v1.0.0 users can refer to its [versioned guide](https://github.com/liyunhui0707/deepseek-reviewer/blob/v1.0.0/docs/guide.zh-CN.md) and the upgrade instructions below.
+This guide covers **v1.2.1**. Select matching v1.2.1 assets from the release list. Earlier versions do not support every command below; use their versioned documentation or upgrade first.
 
 ## Install
 
@@ -57,7 +57,7 @@ Run setup, then enroll your key once **in your own interactive Terminal**:
 '
 ```
 
-`setup` looks for the pinned Claude version, then the `claude` on PATH; use `setup --claude /absolute/path` for a different location. It checks compatibility and installs the bundled Skill without replacing existing customizations. It is repeatable and does not access credentials or call a model. Skip `credentials save` if already enrolled. `doctor` reports **LOCAL_READY**, not authenticated or live-tested. Start a new Codex session to discover the Skill. Choose `$deepseek-reviewer` explicitly if another personal review Skill overlaps.
+`setup` looks for the pinned Claude version, then the `claude` on PATH; use `setup --claude /absolute/path` for a different location. It checks compatibility and installs the bundled Skill without replacing existing customizations. It is repeatable and does not access credentials or call a model. Skip `credentials save` if already enrolled for this product. `doctor` reports **LOCAL_READY**, not authenticated or live-tested. Codex detects Skill updates automatically. If an active session still follows old instructions, save your work, exit and `codex resume` that same session in the same project; no logout or login is needed. Use `$deepseek-reviewer` explicitly to select the product Skill. See [Codex’s Skill documentation](https://learn.chatgpt.com/docs/build-skills).
 
 Keychain may display an access dialog during a review. Choose **Allow**, not **Always Allow**. Saving a key removes repeated key entry; it does not remove macOS consent. See [credential maintenance](docs/credentials.md).
 
@@ -72,6 +72,8 @@ Or:
 > 用 DeepSeek 来审核下。
 
 The Skill selects a focused task, prepares a manifest, confirms any missing source-disclosure/cost authorization, invokes one review, and reads the Findings in the same conversation. Authorization already provided for the same scope is reused. Host command approvals still apply.
+
+The **Skill** tells Codex how to use the product; the **CLI** performs preparation, bounded execution and report retrieval. All projects use the same installed CLI. They do not need their own launcher or the historical audit project.
 
 For direct CLI use, prepare first. This step is offline:
 
@@ -104,15 +106,13 @@ Retrieve an existing result without starting a model:
 
 The ID is returned by `prepare`. Reports distinguish successful Read observations, files without such observations, Findings and client usage. A successful Read does not prove full-file reading or complete review. Codex must still classify confirmed defects, unverified hypotheses and optional advice.
 
-### Report retention improvements (unreleased source)
+### Partial reports and review profiles
 
-The source checkout now preserves the latest **explicit, structured public review checkpoint** when budget, turns or time run out. `PARTIAL` can mean **partial review available, no final report**. `findings` remains the final-report field; `partial_review` holds provisional opinions and declared coverage gaps. Ordinary progress, internal thinking, tool output and error messages are never promoted to Findings. Invalid, secret-like or out-of-scope checkpoints are withheld; corrupted/oversized captures cannot produce accepted partial reports. Missing usage remains unknown, not zero. A later final report supersedes preliminary opinions.
+Version 1.2.0 preserves the latest **explicit, structured public review checkpoint** when budget, turns or time run out. `PARTIAL` can mean **partial review available, no final report**. `findings` remains the final-report field; `partial_review` holds provisional opinions and declared coverage gaps. Ordinary progress, internal thinking, tool output and error messages are never promoted to Findings. Invalid, secret-like or out-of-scope checkpoints are withheld; corrupted/oversized captures cannot produce accepted partial reports. Missing usage remains unknown, not zero. A later final report supersedes preliminary opinions.
 
 Preparation adds `--profile quick` (180s, 8 turns, 4,000 output tokens, $0.25) and `--profile standard` (the existing defaults below). Explicit limit flags override the preset. `--focus-file` prioritizes up to three paths already selected with `--file`; it leaves other approved context available for independent exploration. Scope advisories appear above 6 files/48 KiB for quick or 12 files/96 KiB for standard. These are guidance, not measured completion capacities. Narrow the question and include necessary context before authorizing; do not automatically increase budgets or split into paid runs.
 
 **There is no enforced “stop exploring, then finish” reservation in this invocation.** The pinned CLI's turn/budget caps stop execution; the Runner's timeout terminates it. Checkpoint/report instructions cannot force model compliance or a final report. Streaming another input can start another turn with its own limit, so this product does not inject follow-up prompts, resume or relaunch to manufacture completion. See the [official CLI reference](https://code.claude.com/docs/en/cli-reference). Bounded synthetic subprocess tests verify retention mechanics; new live-model behavior is not yet accepted. Checkpoints are saved when the bounded invocation returns; a forced kill of the parent or power loss can still prevent saving.
-
-These options are not in the published v1.1.0 archive yet. The website and release version remain unchanged.
 
 The updated Skill status also reports competing `deepseek-review` entries in `~/.agents/skills` or `~/.codex/skills`. Inspect and back up/retire the legacy entry with user approval, then use the product `deepseek-reviewer` Skill. Do not invent a project-local wrapper when the installed CLI is absent. Installation/setup does not silently overwrite or disable a customized legacy Skill.
 
@@ -156,7 +156,7 @@ Skill updates are separate and explicit, using the **newly installed CLI**:
 ~/.local/bin/deepseek-reviewer install-skill --restore
 ```
 
-Only unchanged product-managed files (or the exact public v1.0.0 Skill) are eligible. Unknown files, links and customizations stop automatic replacement. A bounded local backup is retained. Restart Codex to load the changed Skill. A CLI rollback does not silently downgrade the Skill; check compatibility and explicitly restore it if necessary.
+Only unchanged product-managed files (or the exact public v1.0.0 Skill) are eligible. Unknown files, links and customizations stop automatic replacement. A bounded local backup is retained. If Codex still follows the old Skill, exit and resume the same session. A CLI rollback does not silently downgrade the Skill; check compatibility and explicitly restore it if necessary.
 
 If Claude moved or changed, the Reviewer stops. First inspect the proposed registration; do not delete the existing one:
 
