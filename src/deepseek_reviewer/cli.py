@@ -38,6 +38,9 @@ HINTS = {
     'terminated': 'The review received a termination request. Its child process was stopped; the attempt remains consumed.',
     'error_max_turns': 'The agent turn limit was reached. Inspect coverage and narrow the next task before requesting another paid review.',
     'error_max_budget_usd': 'The client budget threshold was reached. This is not the provider invoice; do not automatically retry or raise the budget.',
+    'process_nonzero': 'The child exited unsuccessfully. Any available review is partial; do not treat it as completed.',
+    'cleanup_failed': 'Process cleanup could not be confirmed. Inspect the cleanup status; do not relaunch or report completion.',
+    'focus_files': 'Choose at most three --focus-file paths, each already included by --file.',
     'no_previous_installation': 'No previous product installation is recorded. Install a separately verified release instead.',
     'release_checksum_mismatch': 'The downloaded or installed archive does not match its checksum. Do not execute it.',
     'existing_unmanaged_command': 'An existing command is not the recorded product launcher. Preserve it and inspect the conflict; automatic overwrite is refused.',
@@ -70,13 +73,25 @@ def render(value):
         lines.append('Elapsed: ' + known(value.get('duration_seconds')) + 's; client estimate: ' + known(observation.get('client_estimated_usd')) + ' USD')
         lines.append('Observed responses: ' + known(observation.get('model_responses_observed')) + '; HTTP requests and provider bill: unknown')
         usage = observation.get('usage', {})
-        lines.append('Reported tokens: input=' + known(usage.get('input_tokens')) + ', output=' + known(usage.get('output_tokens')))
+        lines.append('Reported tokens: input=' + known(usage.get('input_tokens')) + ', output=' + known(usage.get('output_tokens'))
+                     + '; source: ' + observation.get('usage_source', 'unknown'))
         lines.append('Expected tools observed: ' + known(value.get('tool_boundary_observed')) + '; snapshot unchanged: ' + known(value.get('snapshot_unchanged')))
+        if value.get('cleanup'): lines.append('Process cleanup confirmed: ' + known(value['cleanup'].get('completed')))
         coverage = value.get('coverage_observation', {})
         lines.append('Successful Read observed: ' + ', '.join(coverage.get('successful_read_files', [])))
         lines.append('No successful Read observed: ' + ', '.join(coverage.get('no_successful_read_observed', [])))
         lines.append('Reading is not complete coverage. Findings require your primary agent to verify.')
         lines.extend(['', value.get('findings') or 'No accepted final Findings were captured.'])
+        partial = value.get('partial_review')
+        if partial is not None:
+            lines.append('\nPartial review available (provisional; final report supersedes it):')
+            for finding in partial['findings']:
+                lines.extend([f"{finding['severity']} [{finding['kind']}] {finding['file']}:{finding['line']}",
+                              finding['evidence'], finding['explanation'], 'Suggestion: ' + finding['suggestion']])
+            if not partial['findings']: lines.append('No supported findings at this checkpoint; not an approval.')
+            lines.extend('Coverage gap: ' + gap for gap in partial['coverage_gaps'])
+        if value.get('partial_review_withheld'):
+            lines.append('Checkpoint withheld because capture or execution evidence was unsafe/inconsistent.')
     else:
         for key in ('product_version', 'claude_version', 'provider', 'model', 'credentials', 'live_compatibility_on_this_mac', 'skill', 'current', 'proposed', 'current_sha256'):
             if key in value: lines.append(key + ': ' + json.dumps(value[key], ensure_ascii=False))
@@ -86,6 +101,10 @@ def render(value):
                       'Limits: ' + json.dumps(value['limits']),
                       'Endpoint: ' + value['endpoint'], 'Plan: ' + value['plan'], 'Plan SHA-256: ' + value['sha256'],
                       'Preparation is offline. Source disclosure and a paid call still require authorization.'])
+        if 'delivery' in value:
+            lines.extend(['Profile: ' + value['profile'] + '; priority files: ' + ', '.join(value['focus_files']),
+                          value['delivery']['scope_advisory'],
+                          'Early checkpoints requested; forced finalization before limits is not supported.'])
     for key in ('command', 'installed', 'report_path', 'note', 'next'):
         if value.get(key): lines.append(key + ': ' + str(value[key]))
     return terminal_text('\n'.join(lines))
@@ -116,12 +135,13 @@ def setup(claude):
     else:
         config.register(claude or config.discover_claude())
     skill = distribution.skill_status()
-    if skill['status'] == 'NOT_INSTALLED':
+    if skill['status'] == 'NOT_INSTALLED' and not skill.get('conflicting_skills'):
         distribution.install_skill()
         skill = distribution.skill_status()
-    return {**doctor(), 'status': 'LOCAL_READY' if skill['status'] == 'CURRENT' else 'ACTION_REQUIRED',
+    ready = skill['status'] == 'CURRENT' and not skill.get('conflicting_skills')
+    return {**doctor(), 'status': 'LOCAL_READY' if ready else 'ACTION_REQUIRED',
             'skill': skill, 'next': ('In your own Terminal, enroll your key once with credentials save if needed. Start a new Codex session, then say: Use DeepSeek to review these changes.'
-                if skill['status'] == 'CURRENT' else 'Run install-skill --check and inspect its result; customized Skills are never overwritten.')}
+                if ready else 'Run install-skill --check. Resolve any legacy Skill conflict before use; customized Skills are never overwritten.')}
 
 
 def progress_notice(value, format):
@@ -133,6 +153,7 @@ def progress_notice(value, format):
              'tool_result': 'Tool result received', 'result_received': 'Final result received', 'finished': 'Process finished'}.get(value['phase'], value['phase'])
     if value.get('notification') == 'heartbeat': phase += '; no new event (cause unknown)'
     detail = ' '.join(str(value[k]) for k in ('tool', 'file') if value.get(k))
+    if value.get('checkpoints_observed'): detail += f" | public checkpoints: {value['checkpoints_observed']}"
     print(terminal_text(f"{value['elapsed_seconds']:.0f}s | {phase} {detail} | {value['remaining_seconds']:.0f}s remaining"), file=sys.stderr, flush=True)
 
 
@@ -162,11 +183,15 @@ def parser():
     c.add_argument('--revision', default='explicitly selected working files')
     c.add_argument('--constraints', default='Static review only. Do not change files or run tests.')
     c.add_argument('--test-evidence', default='No local test evidence supplied; do not infer tests passed.')
-    c.add_argument('--timeout', type=int, default=300)
-    c.add_argument('--max-turns', type=int, default=12)
-    c.add_argument('--max-budget-usd', type=float, default=0.50)
-    c.add_argument('--max-output-tokens', type=int, default=16000)
-    c.add_argument('--effort', choices=['low', 'default'], default='low')
+    c.add_argument('--profile', choices=tuple(tasks.PROFILES), default='standard',
+                   help='quick: 180s/8 turns/4000 output/$0.25; standard (unchanged defaults): 300s/12/16000/$0.50. Not completion guarantees.')
+    c.add_argument('--focus-file', action='append', default=[], dest='focus_files',
+                   help='Prioritize up to three paths already selected by --file; other selected files remain available')
+    c.add_argument('--timeout', type=int)
+    c.add_argument('--max-turns', type=int)
+    c.add_argument('--max-budget-usd', type=float)
+    c.add_argument('--max-output-tokens', type=int)
+    c.add_argument('--effort', choices=['low', 'default'])
     c = sub.add_parser('review', help='Send one approved snapshot to DeepSeek; one Claude process, no relaunch')
     c.add_argument('--plan', type=Path, required=True)
     c.add_argument('--plan-sha256', required=True)
@@ -215,10 +240,13 @@ def main(argv=None):
         elif args.command == 'credentials':
             return config.credentials(args.action)
         elif args.command == 'prepare':
-            limits = {k: getattr(args, k) for k in ('timeout', 'max_turns', 'max_budget_usd', 'max_output_tokens')}
-            limits['effort'] = None if args.effort == 'default' else args.effort
+            overrides = {k: getattr(args, k) for k in ('timeout', 'max_turns', 'max_budget_usd', 'max_output_tokens')
+                         if getattr(args, k) is not None}
+            if args.effort is not None: overrides['effort'] = None if args.effort == 'default' else args.effort
+            limits = tasks.resolve_limits(args.profile, overrides)
             output(tasks.create_plan(args.root, args.names, args.question, args.revision,
-                                   args.constraints, args.test_evidence, limits))
+                                   args.constraints, args.test_evidence, limits,
+                                   focus_files=args.focus_files, profile=args.profile))
         elif args.command == 'review':
             print('STARTING — Keychain may require Allow in macOS. Do not use Always Allow.', file=sys.stderr, flush=True)
             report = tasks.execute_plan(args.plan, args.plan_sha256,

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0
+
+- Preserve explicitly structured public review checkpoints as `partial_review` when time, turns or the client budget run out. Keep provisional opinions separate from the final `findings` report and never reinterpret internal thinking, tool results or error text as Findings.
+- Add quick/standard planning presets, priority-file selection and oversized-scope advice. Existing defaults and hard resource ceilings remain unchanged; no automatic budget increase or retry.
+- Report partial observed token usage without double-counting response snapshots; keep HTTP request count and actual provider billing unknown.
+- Detect competing legacy Skills, direct all product calls through `prepare / review / report`, and preserve original failure diagnostics when process cleanup fails.
+- Early checkpoints are requested, not guaranteed. This CLI does not enforce a final-report reservation before a hard stop. New retention behavior has offline synthetic coverage; no new paid review was performed for this release.
+
 ## 1.1.0
 
 - Repeatable offline setup and readable Terminal diagnostics, with explicit JSON output for Codex.

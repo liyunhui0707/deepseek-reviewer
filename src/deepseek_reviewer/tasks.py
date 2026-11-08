@@ -8,9 +8,25 @@ import uuid
 
 from . import __version__
 from .config import app_home, load_runtime, private_directory, private_read, state_lock, ENDPOINT, MODEL
-from .prepare import prepare_claude_review
+from .prepare import build_review_task, prepare_claude_review
 from .runner import AgentStopped, private_write, run_bounded
-from .safety import selected_paths, read_selected, safe_text, scan_secrets, ReviewError
+from .safety import selected_paths, read_selected, safe_text, scan_secrets, validate_checkpoint, ReviewError
+
+
+# Presets are planning defaults, not promises of completion or API billing caps.
+# Keep the previously published defaults when no profile is selected.
+PROFILES = {
+    'quick': dict(timeout=180, max_turns=8, max_budget_usd=.25, max_output_tokens=4000, effort='low'),
+    'standard': dict(timeout=300, max_turns=12, max_budget_usd=.50, max_output_tokens=16000, effort='low'),
+}
+
+
+def resolve_limits(profile, overrides):
+    if profile not in PROFILES or not set(overrides) <= PROFILES['standard'].keys():
+        raise AgentStopped('invalid_limits')
+    limits = {**PROFILES[profile], **overrides}
+    validate_limits(limits)
+    return limits
 
 
 def digest(data):
@@ -33,10 +49,14 @@ def validate_limits(limits):
         raise AgentStopped('invalid_limits')
 
 
-def create_plan(root, names, objective, revision, constraints, evidence, limits):
+def create_plan(root, names, objective, revision, constraints, evidence, limits, *, focus_files=(), profile='standard'):
     validate_limits(limits)
     runtime = load_runtime()  # Does not retrieve a credential.
     names = selected_paths(names)
+    if (profile not in PROFILES or not isinstance(focus_files, (list, tuple)) or len(focus_files) > 3
+            or any(not isinstance(n, str) or n not in names for n in focus_files)
+            or len(set(focus_files)) != len(focus_files)):
+        raise AgentStopped('focus_files')
     root = Path(root).absolute()
     task = {'objective': objective, 'revision': revision, 'constraints': constraints, 'test_evidence': evidence}
     if any(not isinstance(v, str) or not v.strip() for v in task.values()):
@@ -49,6 +69,7 @@ def create_plan(root, names, objective, revision, constraints, evidence, limits)
         safe_text(body)
     if len(encode(task)) + len(encode(list(names))) > 6000:
         raise AgentStopped('task_too_large')
+    build_review_task(approved_files=names, required_files=focus_files, **task, **limits)
     runs = private_directory(private_directory(app_home()) / 'reviews')
     run = runs / uuid.uuid4().hex
     run.mkdir(mode=0o700)
@@ -67,7 +88,13 @@ def create_plan(root, names, objective, revision, constraints, evidence, limits)
     plan = {'schema': 1, 'product_version': __version__, 'id': run.name,
             'endpoint': ENDPOINT, 'model': MODEL, 'files': hashes,
             'bytes': sum(map(len, materials.values())), 'task': task, 'limits': limits,
-            'runtime_sha256': digest(encode(runtime))}
+            'runtime_sha256': digest(encode(runtime)), 'profile': profile, 'focus_files': list(focus_files),
+            'delivery': {'forced_finalization_supported': False,
+                         'partial_review': 'Latest validated explicit checkpoint; not a final report.',
+                         'scope_advisory': ('Narrow to one risk or split before approval; scope exceeds profile guidance.'
+                             if len(names) > (6 if profile == 'quick' else 12)
+                             or sum(map(len, materials.values())) > (48 if profile == 'quick' else 96) * 1024
+                             else 'Focused scope; completion still not guaranteed.')}}
     raw = encode(plan)
     private_write(run / 'plan.json', raw)
     return {'plan': str(run / 'plan.json'), 'sha256': digest(raw), **plan,
@@ -99,8 +126,9 @@ def summarize(result, files, unchanged):
     if observed.get('capture_complete'):
         for line in result['stdout'].splitlines():
             event = json.loads(line)
-            if event.get('type') == 'result' and isinstance(event.get('result'), str):
-                final = event['result']
+            if (event.get('type') == 'result' and event.get('subtype') == 'success'
+                    and event.get('is_error') is False and isinstance(event.get('result'), str)):
+                final = event['result'].strip() or None
     withheld = False
     if final:
         try: scan_secrets(final)
@@ -109,27 +137,44 @@ def summarize(result, files, unchanged):
     tools_ok = (observed.get('unexpected_init_tools') is False
                 and observed.get('tools_requested', {}).get('other') == 0)
     model_ok = bool(observed.get('models_observed')) and 'unrecognized' not in observed['models_observed']
+    cleanup_ok = result.get('cleanup', {}).get('completed', True)
+    partial = None
+    partial_withheld = result.get('checkpoint') is not None or bool(observed.get('checkpoints_rejected'))
+    # A validated prefix can survive an ordinary execution limit, but never a
+    # corrupted/oversized stream, unexpected tools, model or changed snapshot.
+    if (result['failure'] in (None, 'claude_result_error', 'timeout', 'missing_result', 'cancelled', 'terminated')
+            and tools_ok and model_ok and unchanged and cleanup_ok and result.get('checkpoint') is not None):
+        try:
+            partial = validate_checkpoint(result['checkpoint'], files)
+            partial_withheld = False
+        except (ReviewError, ValueError, TypeError, UnicodeError, RecursionError):
+            partial_withheld = True
     completed = (result['exit_code'] == 0 and result['failure'] is None
                  and observed.get('execution') == 'completed' and final
-                 and tools_ok and model_ok and unchanged)
-    status = 'COMPLETED' if completed else 'PARTIAL' if final else 'FAILED'
+                 and tools_ok and model_ok and unchanged and cleanup_ok)
+    status = 'COMPLETED' if completed else 'PARTIAL' if final or partial else 'FAILED'
     reason = ((observed.get('result_subtype') if result['failure'] == 'claude_result_error' else result['failure'])
               or (observed.get('result_subtype') if observed.get('result_subtype') != 'success' else None)
               or ('unexpected_tools' if not tools_ok else None)
               or ('model_unverified' if not model_ok else None)
               or ('snapshot_changed' if not unchanged else None)
               or ('report_withheld' if withheld else None)
+              or ('process_nonzero' if result['exit_code'] not in (None, 0) else None)
               or ('missing_report' if not final else None))
     read_files = sorted(set(observed.get('read_results', ())) & set(files))
     stderr = result['stderr']
     return {'status': status, 'started': result['started'], 'exit_code': result['exit_code'],
             'failure': result['failure'], 'duration_seconds': result['duration_seconds'],
+            'cleanup': result.get('cleanup'),
             'stop_reason': reason,
             'tool_boundary_observed': tools_ok, 'model_verified': model_ok,
             'snapshot_unchanged': unchanged, 'credential_like_report_withheld': withheld,
             'stderr_bytes': len(stderr), 'stderr_sha256': digest(stderr),
             'observation': observed, 'approved_files': sorted(files),
-            'findings': final, 'quality': 'requires_primary_agent_verification',
+            'findings': final, 'partial_review': partial,
+            'partial_review_withheld': partial_withheld,
+            'partial_review_note': 'Provisional model claims, may be superseded; not a final report or review approval.',
+            'quality': 'requires_primary_agent_verification',
             'coverage': 'read tool success does not certify complete review',
             'coverage_observation': {'successful_read_files': read_files,
                 'no_successful_read_observed': sorted(set(files) - set(read_files)),
@@ -151,7 +196,7 @@ def _execute_plan(path, expected_sha256, progress):
         raise AgentStopped('runtime_changed_since_approval')
     snapshot = run / 'snapshot'
     kwargs = prepare_claude_review(snapshot, run / 'execution',
-        approved_files=plan['files'], required_files=list(plan['files']),
+        approved_files=plan['files'], required_files=plan.get('focus_files', []),
         runtime=runtime, **plan['task'], **plan['limits'])
     result = run_bounded(**kwargs, on_progress=progress)
     try:

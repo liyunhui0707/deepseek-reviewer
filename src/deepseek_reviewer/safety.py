@@ -117,6 +117,37 @@ def scan_secrets(value):
         for item in value:
             scan_secrets(item)
 
+
+def validate_checkpoint(value, approved_files):
+    """Only a bounded, explicitly public review artifact, never arbitrary prose.
+
+    This validates shape/disclosure, not the model's claims or cited line accuracy.
+    Unknown fields (including reasoning) are rejected rather than logged.
+    """
+    import json
+    def text(item):
+        return (isinstance(item, str) and 0 < len(item) <= 2000
+                and not any(ord(c) < 32 and c not in '\n\t' or ord(c) == 127 for c in item)
+                and not re.search(r'/(?:Users|home|private|tmp)/', item))
+    if (not isinstance(value, dict) or set(value) != {'schema', 'findings', 'coverage_gaps'}
+            or type(value['schema']) is not int or value['schema'] != 1
+            or not isinstance(value['findings'], list) or len(value['findings']) > 12
+            or not isinstance(value['coverage_gaps'], list) or len(value['coverage_gaps']) > 20
+            or not all(text(gap) for gap in value['coverage_gaps'])
+            or len(json.dumps(value, ensure_ascii=False).encode()) > 16384):
+        raise ReviewError('invalid_checkpoint')
+    fields = {'kind', 'severity', 'file', 'line', 'evidence', 'explanation', 'suggestion'}
+    for finding in value['findings']:
+        if (not isinstance(finding, dict) or set(finding) != fields
+                or finding['kind'] not in ('finding', 'hypothesis', 'advice')
+                or finding['severity'] not in ('P0', 'P1', 'P2', 'P3')
+                or not isinstance(finding['file'], str) or finding['file'] not in approved_files
+                or type(finding['line']) is not int or not 1 <= finding['line'] <= 10000000
+                or not all(text(finding[k]) for k in ('evidence', 'explanation', 'suggestion'))):
+            raise ReviewError('invalid_checkpoint')
+    scan_secrets(value)
+    return value
+
 def safe_text(data):
     if len(data) > MAX_BYTES:
         raise ReviewError('input_limit')

@@ -238,7 +238,12 @@ def _skill_status():
 
 def skill_status():
     with state_lock(shared=True):
-        return _skill_status()
+        value = _skill_status()
+        # Metadata only. A differently named legacy Skill can still win natural
+        # language routing; CURRENT alone must not hide that competing entry.
+        value['conflicting_skills'] = [f'~/{folder}/deepseek-review' for folder in ('.agents/skills', '.codex/skills')
+            if (home() / folder / 'deepseek-review').exists() or (home() / folder / 'deepseek-review').is_symlink()]
+        return value
 
 
 def install_skill(*, update=False):

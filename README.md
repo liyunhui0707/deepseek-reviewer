@@ -104,6 +104,18 @@ Retrieve an existing result without starting a model:
 
 The ID is returned by `prepare`. Reports distinguish successful Read observations, files without such observations, Findings and client usage. A successful Read does not prove full-file reading or complete review. Codex must still classify confirmed defects, unverified hypotheses and optional advice.
 
+### Report retention improvements (unreleased source)
+
+The source checkout now preserves the latest **explicit, structured public review checkpoint** when budget, turns or time run out. `PARTIAL` can mean **partial review available, no final report**. `findings` remains the final-report field; `partial_review` holds provisional opinions and declared coverage gaps. Ordinary progress, internal thinking, tool output and error messages are never promoted to Findings. Invalid, secret-like or out-of-scope checkpoints are withheld; corrupted/oversized captures cannot produce accepted partial reports. Missing usage remains unknown, not zero. A later final report supersedes preliminary opinions.
+
+Preparation adds `--profile quick` (180s, 8 turns, 4,000 output tokens, $0.25) and `--profile standard` (the existing defaults below). Explicit limit flags override the preset. `--focus-file` prioritizes up to three paths already selected with `--file`; it leaves other approved context available for independent exploration. Scope advisories appear above 6 files/48 KiB for quick or 12 files/96 KiB for standard. These are guidance, not measured completion capacities. Narrow the question and include necessary context before authorizing; do not automatically increase budgets or split into paid runs.
+
+**There is no enforced “stop exploring, then finish” reservation in this invocation.** The pinned CLI's turn/budget caps stop execution; the Runner's timeout terminates it. Checkpoint/report instructions cannot force model compliance or a final report. Streaming another input can start another turn with its own limit, so this product does not inject follow-up prompts, resume or relaunch to manufacture completion. See the [official CLI reference](https://code.claude.com/docs/en/cli-reference). Bounded synthetic subprocess tests verify retention mechanics; new live-model behavior is not yet accepted. Checkpoints are saved when the bounded invocation returns; a forced kill of the parent or power loss can still prevent saving.
+
+These options are not in the published v1.1.0 archive yet. The website and release version remain unchanged.
+
+The updated Skill status also reports competing `deepseek-review` entries in `~/.agents/skills` or `~/.codex/skills`. Inspect and back up/retire the legacy entry with user approval, then use the product `deepseek-reviewer` Skill. Do not invent a project-local wrapper when the installed CLI is absent. Installation/setup does not silently overwrite or disable a customized legacy Skill.
+
 ## Limits and data
 
 | Setting | Default | Maximum supported override |

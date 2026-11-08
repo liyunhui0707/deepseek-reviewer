@@ -141,7 +141,7 @@ emit({'type':'result','subtype':'success','is_error':False,'result':'Synthetic r
 
     def test_unknown_tools_and_missing_report_do_not_complete(self):
         result = {'started':True,'exit_code':0,'failure':None,'duration_seconds':1,'stderr':b'',
-            'stdout':b'{"type":"result","result":"example"}\n','claude':{
+            'stdout':b'{"type":"result","subtype":"success","is_error":false,"result":"example"}\n','claude':{
             'capture_complete':True,'execution':'completed','unexpected_init_tools':True,
             'tools_requested':{'other':1},'models_observed':['deepseek-flash']}}
         self.assertEqual(tasks.summarize(result, ['price.py'], True)['status'], 'PARTIAL')

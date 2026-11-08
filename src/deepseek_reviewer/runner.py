@@ -8,7 +8,7 @@ import signal
 import subprocess
 import threading
 import time
-from .safety import validate_path, ReviewError
+from .safety import validate_path, validate_checkpoint, ReviewError
 
 MAX_CAPTURE = 256 * 1024
 MAX_CLAUDE_STREAM = 4 * 1024 * 1024
@@ -16,6 +16,7 @@ MAX_EXECUTION_SECONDS = 600
 MAX_STDOUT_BYTES = 4 * 1024 * 1024
 MAX_STDOUT_STREAM_BYTES = 64 * 1024 * 1024
 MAX_JSONL_RECORD_BYTES = 1024 * 1024
+USAGE_FIELDS = ('input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens')
 
 class AgentStopped(Exception):
     pass
@@ -52,9 +53,30 @@ class _ClaudeStreamCapture:
         self.final_report = False
         self.num_turns = self.cost = None
         self.usage = {}
+        self.response_usage = {}
         self.cwd = os.path.abspath(cwd) if cwd is not None else None
         self.progress_files = set(progress_files)
         self.unexpected_init_tools = None
+        self.checkpoint = None
+        self.checkpoints_observed = self.checkpoints_rejected = 0
+
+    def _checkpoint(self, text):
+        # A whole ordinary text block must opt in. Never extract from thinking,
+        # tool results, unmarked prose or streaming deltas/incomplete JSON.
+        text = text.strip()
+        if not text.startswith('```review-checkpoint'): return
+        try:
+            if len(text.encode()) > 16432 or not text.startswith('```review-checkpoint\n') or not text.endswith('\n```'):
+                raise ValueError
+            value = json.loads(text[len('```review-checkpoint\n'):-4],
+                               object_pairs_hook=self._object, parse_constant=self._constant)
+            self.checkpoint = validate_checkpoint(value, self.progress_files)
+            self.checkpoints_observed += 1
+        except (ValueError, TypeError, UnicodeError, RecursionError, ReviewError):
+            # A failed revision may have retracted earlier claims. Do not fall
+            # back to an older checkpoint as though it were still current.
+            self.checkpoint = None
+            self.checkpoints_rejected += 1
 
     def _observe(self, event):
         """Observe fixed labels, approved relative filenames and numeric metadata.
@@ -74,13 +96,23 @@ class _ClaudeStreamCapture:
             if not isinstance(content, list): content = []
             if event['type'] == 'assistant':
                 self.phase = 'model_response'
-                if isinstance(message.get('id'), str): self.response_ids.add(message['id'])
+                if isinstance(message.get('id'), str):
+                    self.response_ids.add(message['id'])
+                    usage = message.get('usage')
+                    if isinstance(usage, dict):
+                        accumulated = self.response_usage.setdefault(message['id'], {})
+                        # Stream snapshots may repeat the same response's usage.
+                        # Keep its greatest observed count, never add duplicates.
+                        for key in USAGE_FIELDS:
+                            if type(usage.get(key)) is int and usage[key] >= 0:
+                                accumulated[key] = max(accumulated.get(key, 0), usage[key])
                 if isinstance(message.get('model'), str):
                     self.models.add(message['model'] if message['model'] in ('deepseek-flash', 'deepseek-flash[1m]') else 'unrecognized')
             for block in content:
                 if not isinstance(block, dict): continue
                 if event['type'] == 'assistant' and block.get('type') == 'text' and isinstance(block.get('text'), str):
                     self.assistant_text |= bool(block['text'])
+                    self._checkpoint(block['text'])
                 if event['type'] == 'assistant' and block.get('type') == 'tool_use' and isinstance(block.get('id'), str):
                     tool = block.get('name')
                     tool = tool if tool in ('Read', 'Glob', 'Grep') else 'lifecycle' if tool == 'EndConversation' else 'other'
@@ -107,13 +139,15 @@ class _ClaudeStreamCapture:
             subtype = event['subtype']
             self.result_subtype = subtype if subtype in ('success', 'error_max_turns', 'error_max_budget_usd',
                                   'error_during_execution', 'error_max_structured_output_retries') else 'other_result'
-            self.final_report = not self.result_error and bool(event.get('result') or event.get('structured_output'))
+            text_result = event.get('result')
+            self.final_report = not self.result_error and bool(
+                text_result.strip() if isinstance(text_result, str) else event.get('structured_output'))
             if type(event.get('num_turns')) is int and event['num_turns'] >= 0: self.num_turns = event['num_turns']
             cost = event.get('total_cost_usd')
             if type(cost) in (int, float) and 0 <= cost <= 1e9 and math.isfinite(cost): self.cost = cost
             usage = event.get('usage')
             if isinstance(usage, dict):
-                self.usage = {k: usage[k] for k in ('input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens')
+                self.usage = {k: usage[k] for k in USAGE_FIELDS
                               if type(usage.get(k)) is int and usage[k] >= 0}
 
     def summary(self, started, exit_code, failure):
@@ -123,14 +157,19 @@ class _ClaudeStreamCapture:
         elif failure == 'timeout' or (failure == 'claude_result_error' and self.result_subtype in ('error_max_turns', 'error_max_budget_usd')):
             execution = 'incomplete'
         capture_complete = failure in (None, 'claude_result_error')
+        observed_usage = {key: sum(usage.get(key, 0) for usage in self.response_usage.values())
+                          for key in USAGE_FIELDS if any(key in usage for usage in self.response_usage.values())}
         return {'execution': execution, 'result_present': self.result_seen, 'capture_complete': capture_complete,
                 'result_subtype': self.result_subtype, 'final_report_available': self.final_report and capture_complete,
                 'assistant_text_observed': self.assistant_text, 'coverage': 'not_assessed',
+                'checkpoints_observed': self.checkpoints_observed, 'checkpoints_rejected': self.checkpoints_rejected,
                 'authentication': 'unknown', 'http_requests': None, 'provider_billed_usd': None,
                 'model_responses_observed': len(self.response_ids), 'models_observed': sorted(self.models),
                 'tools_requested': dict(self.tool_counts), 'tool_results_observed': self.tool_results,
                 'read_results': sorted(self.read_results), 'unexpected_init_tools': self.unexpected_init_tools,
-                'num_turns': self.num_turns, 'client_estimated_usd': self.cost, 'usage': dict(self.usage)}
+                'num_turns': self.num_turns, 'client_estimated_usd': self.cost,
+                'usage': dict(self.usage) if self.usage else observed_usage,
+                'usage_source': 'result' if self.usage else 'observed_responses_partial' if observed_usage else 'not_observed'}
 
     @staticmethod
     def _object(pairs):
@@ -253,6 +292,7 @@ def run_bounded(args, cwd, env, task, timeout=60, *, claude_stream_json=False,
                                    cwd=cwd, progress_files=progress_files)
                if claude_stream_json else None)
     failure = None; started = time.monotonic()
+    cleanup_errors = []
     last_notice = started; last_output = started; last_signature = None
     callback_failed = False
 
@@ -261,14 +301,16 @@ def run_bounded(args, cwd, env, task, timeout=60, *, claude_stream_json=False,
         if on_progress is None or callback_failed: return
         now = time.monotonic()
         signature = (capture.phase, capture.current_tool, capture.current_file,
-                     len(capture.response_ids), sum(capture.tool_counts.values()), capture.tool_results)
+                     len(capture.response_ids), sum(capture.tool_counts.values()), capture.tool_results,
+                     capture.checkpoints_observed)
         if not finished and kind != 'heartbeat' and signature == last_signature: return
         notice = {'notification': kind, 'phase': 'finished' if finished else capture.phase,
                   'elapsed_seconds': round(now - started, 3), 'seconds_since_output': round(now - last_output, 3),
                   'remaining_seconds': max(0, round(timeout - (now - started), 1)),
                   'tool': capture.current_tool, 'file': capture.current_file,
                   'model_responses_observed': len(capture.response_ids),
-                  'tool_calls_observed': sum(capture.tool_counts.values()), 'tool_results_observed': capture.tool_results}
+                  'tool_calls_observed': sum(capture.tool_counts.values()), 'tool_results_observed': capture.tool_results,
+                  'checkpoints_observed': capture.checkpoints_observed}
         if finished:
             notice.update(execution=capture.summary(proc is not None, proc.returncode if proc else None, failure)['execution'],
                           exit_code=proc.returncode if proc else None, failure=failure,
@@ -324,20 +366,28 @@ def run_bounded(args, cwd, env, task, timeout=60, *, claude_stream_json=False,
             signal.signal(signal.SIGTERM, previous_sigterm)
         streams.close()
         if proc:
-            try: os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError: pass
+            def signal_group(sig):
+                try: os.killpg(proc.pid, sig)
+                except ProcessLookupError: pass
+                except OSError: cleanup_errors.append('group_signal_failed')
+            signal_group(signal.SIGTERM)
             try: proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL); proc.wait(timeout=2)
-            try: os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError: pass
+                signal_group(signal.SIGKILL)
+                try: proc.wait(timeout=2)
+                except subprocess.TimeoutExpired: cleanup_errors.append('child_not_reaped')
+            signal_group(signal.SIGKILL)
             for p in (proc.stdout, proc.stderr): p.close()
             if proc.stdin and not proc.stdin.closed: proc.stdin.close()
+    if cleanup_errors and failure is None: failure = 'cleanup_failed'
     try: notify(finished=True)
     except AgentStopped: failure = 'progress_callback_error'
     return {'started': proc is not None, 'exit_code': proc.returncode if proc else None,
             'failure': failure, 'duration_seconds': round(time.monotonic()-started, 3),
+            'cleanup': {'completed': not cleanup_errors, 'errors': sorted(set(cleanup_errors)),
+                        'child_reaped': proc is None or proc.returncode is not None},
             **({'stdout_bytes_received': capture.received,
+                'checkpoint': capture.checkpoint,
                 'stdout_progress_events_dropped': capture.dropped_events,
                 'stdout_progress_bytes_dropped': capture.dropped_bytes,
                 'claude': capture.summary(proc is not None, proc.returncode if proc else None, failure)} if capture is not None else {}),
