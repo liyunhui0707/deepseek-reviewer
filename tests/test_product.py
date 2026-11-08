@@ -81,6 +81,7 @@ emit({'type':'result','subtype':'success','is_error':False,'result':'Synthetic r
         self.assertIn('--restricted', args)
         self.assertIn('--safe-mode', args)
         self.assertEqual(args[args.index('--tools') + 1], 'Read,Glob,Grep')
+        self.assertEqual(args[args.index('--max-turns') + 1], '4')
         self.assertEqual(args[args.index('--setting-sources') + 1], '')
         self.assertEqual(args[args.index('--mcp-config') + 1], '{"mcpServers":{}}')
         self.assertEqual(env['CLAUDE_CONFIG_DIR'], env['CLAUDE_SECURESTORAGE_CONFIG_DIR'])
@@ -91,6 +92,20 @@ emit({'type':'result','subtype':'success','is_error':False,'result':'Synthetic r
         self.assertTrue({'Bash','Edit','Write','mcp__*'} <= set(settings['permissions']['deny']))
         self.assertIn(config.SERVICE, settings['apiKeyHelper'])
         self.assertIn('2>/dev/null', settings['apiKeyHelper'])
+
+    def test_pinned_hidden_turn_flag_does_not_fail_registration(self):
+        # The real 2.1.312 option is defined with hideHelp(). Its absence from
+        # --help is not absence of support; visible safety flags still matter.
+        source = self.claude.read_text().replace(' --max-turns', '')
+        self.claude.write_text(source)
+        with patch.object(config.platform, 'system', return_value='Darwin'):
+            self.assertEqual(config._inspect_claude(self.claude)['version'], '2.1.312')
+            self.claude.write_text(source.replace('--restricted ', ''))
+            with self.assertRaisesRegex(AgentStopped, 'missing_claude_capability'):
+                config._inspect_claude(self.claude)
+            self.claude.write_text(source.replace('2.1.312 (Claude Code)', '2.1.313 (Claude Code)'))
+            with self.assertRaisesRegex(AgentStopped, 'unsupported_claude_version'):
+                config._inspect_claude(self.claude)
 
     def test_tampered_plan_snapshot_runtime_and_managed_policy_stop(self):
         plan = self.plan()

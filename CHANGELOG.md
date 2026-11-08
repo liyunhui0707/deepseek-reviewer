@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.1
+
+- Fix a first-setup false rejection: Claude Code 2.1.312 supports `--max-turns` but hides it from `--help`. Keep the pinned version, visible safety-flag checks and actual invocation limit; do not infer unsupported capability from this hidden option.
+- Offline regression reproduces the failure, accepts the pinned hidden-option case, and still rejects missing Restricted support or a different version. The actual pinned executable passes a read-only registration preview; no credential or model call is made.
+
 ## 1.2.0
 
 - Preserve explicitly structured public review checkpoints as `partial_review` when time, turns or the client budget run out. Keep provisional opinions separate from the final `findings` report and never reinterpret internal thinking, tool results or error text as Findings.

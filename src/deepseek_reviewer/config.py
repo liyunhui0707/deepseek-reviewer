@@ -130,9 +130,11 @@ def _inspect_claude(claude):
         if not re.fullmatch(re.escape(TESTED_CLAUDE) + r' \(Claude Code\)\s*', version.stdout.decode()):
             raise AgentStopped('unsupported_claude_version')
         help_result = subprocess.run([str(p), '--help'], env=env, capture_output=True, timeout=10, check=True)
+        # Pinned 2.1.312 supports --max-turns but defines it with hideHelp().
+        # Keep it in the review invocation; only visible flags belong here.
         if not all(x.encode() in help_result.stdout for x in
                    ('--restricted', '--safe-mode', '--tools', '--setting-sources', '--strict-mcp-config',
-                    '--max-turns', '--max-budget-usd', '--no-session-persistence', 'dontAsk', 'stream-json')):
+                    '--max-budget-usd', '--no-session-persistence', 'dontAsk', 'stream-json')):
             raise AgentStopped('missing_claude_capability')
     if fingerprint(p) != before:
         raise AgentStopped('claude_changed_during_registration')

@@ -36,7 +36,7 @@ with tempfile.TemporaryDirectory(prefix='reviewer-install-check-') as d:
         synthetic.write_text('#!' + sys.executable + '''
 import sys
 if '--version' in sys.argv: print('2.1.312 (Claude Code)')
-elif '--help' in sys.argv: print('--restricted --safe-mode --tools --setting-sources --strict-mcp-config --max-turns --max-budget-usd --no-session-persistence dontAsk stream-json')
+elif '--help' in sys.argv: print('--restricted --safe-mode --tools --setting-sources --strict-mcp-config --max-budget-usd --no-session-persistence dontAsk stream-json')
 else: raise SystemExit('No model command is permitted in the packaging test')
 ''')
         synthetic.chmod(0o700)
