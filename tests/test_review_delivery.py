@@ -150,11 +150,12 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(report['status'], 'FAILED')
         self.assertTrue(report['partial_review_withheld'])
 
-    def test_invalid_revision_does_not_resurrect_an_older_finding(self):
+    def test_invalid_revision_keeps_prior_artifact_explicitly_stale(self):
         report = self.report(self.capture([checkpoint_event(), checkpoint_event({**CHECKPOINT, 'schema': 2})]))
-        self.assertEqual(report['status'], 'FAILED')
-        self.assertIsNone(report['partial_review'])
-        self.assertTrue(report['partial_review_withheld'])
+        self.assertEqual(report['status'], 'PARTIAL')
+        self.assertEqual(report['partial_review'], CHECKPOINT)
+        self.assertTrue(report['partial_review_stale'])
+        self.assertIn('earlier artifact', cli.render(report))
 
     def test_whitespace_result_is_not_a_report(self):
         report = self.report(self.capture([message('Preparing'), {'type': 'result', 'subtype': 'success',
@@ -199,6 +200,10 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(loaded['focus_files'], ['price.py'])
         self.assertEqual(loaded['profile'], 'quick')
         self.assertFalse(loaded['delivery']['forced_finalization_supported'])
+        self.assertEqual(loaded['delivery']['thinking_requested'], 'disabled')
+        self.assertEqual(loaded['delivery']['completion_basis'], 'validated_terminal_result_v1')
+        self.assertIsNone(loaded['delivery']['guard'])
+        self.assertEqual(loaded['schema'], 2)
         with self.assertRaisesRegex(AgentStopped, 'focus_files'):
             tasks.create_plan(self.repo, ['price.py'], 'q', 'r', 'c', 't', self.limits, focus_files=['missing.py'])
 
@@ -231,21 +236,38 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(plan['limits'], self.limits)
 
     def test_saved_partial_report_is_retrievable_without_relaunch_or_raw_text(self):
+        from test_report_contract import read_events, REVIEW
         plan = self.plan()
-        result = DeliveryTests().capture([checkpoint_event(), {'type': 'result',
+        result = DeliveryTests().capture([*read_events(), checkpoint_event(REVIEW), {'type': 'result',
             'subtype': 'error_max_budget_usd', 'is_error': True}], 'sys.exit(1)')
         with patch.object(tasks, 'run_bounded', return_value=result) as launch:
             report = tasks.execute_plan(plan['plan'], plan['sha256'])
             saved = tasks.read_report(plan['id'])
             launch.assert_called_once()
         self.assertEqual(saved['status'], 'PARTIAL')
-        self.assertEqual(saved['partial_review'], CHECKPOINT)
+        self.assertEqual(saved['partial_review'], REVIEW)
         serialized = Path(report['report_path']).read_text()
         self.assertNotIn('stdout', serialized)
         self.assertNotIn('"content"', serialized)
         self.assertEqual(Path(report['report_path']).stat().st_mode & 0o777, 0o600)
         with self.assertRaisesRegex(AgentStopped, 'attempt_consumed'):
             tasks.execute_plan(plan['plan'], plan['sha256'])
+
+    def test_saved_format_diagnostic_is_retrievable_without_raw_rejected_text(self):
+        from test_report_contract import read_events, final_event, REVIEW
+        plan = self.plan()
+        result = DeliveryTests().capture([*read_events(), checkpoint_event(REVIEW),
+            {**final_event(REVIEW), 'result': '{"assessment": "private malformed prose"'}])
+        with patch.object(tasks, 'run_bounded', return_value=result) as launch:
+            report = tasks.execute_plan(plan['plan'], plan['sha256'])
+            saved = tasks.read_report(plan['id'])
+            launch.assert_called_once()
+        self.assertEqual(saved['status'], 'PARTIAL')
+        self.assertEqual(saved['partial_review'], REVIEW)
+        self.assertEqual(saved['final_report_diagnostic']['reason'], 'invalid_json')
+        self.assertIn('Final report validation: json/invalid_json', cli.render(saved))
+        self.assertNotIn('private malformed prose', Path(report['report_path']).read_text())
+        self.assertEqual(Path(report['report_path']).stat().st_mode & 0o777, 0o600)
 
     def test_setup_does_not_install_competing_skill_or_hide_conflict(self):
         with patch.object(distribution, 'skill_status', return_value={'status': 'NOT_INSTALLED',
@@ -261,3 +283,52 @@ class PreparationTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentStopped, 'review_task_too_large'):
             tasks.create_plan(self.repo, ['price.py'], 'q' * 5850, 'r', 'c', 't', self.limits)
         self.assertFalse(runs.exists())
+
+    def test_older_plan_is_not_silently_reinterpreted(self):
+        plan = self.plan()
+        path = Path(plan['plan'])
+        value = json.loads(path.read_text()); value['schema'] = 1
+        raw = tasks.encode(value); path.write_bytes(raw)
+        with patch.object(tasks, 'run_bounded') as launch:
+            with self.assertRaisesRegex(AgentStopped, 'unsupported_plan'):
+                tasks.execute_plan(path, tasks.digest(raw))
+        launch.assert_not_called()
+        self.assertFalse((path.parent / 'execution').exists())
+
+    def test_withdrawn_guard_plan_is_not_silently_reinterpreted(self):
+        plan = self.plan()
+        path = Path(plan['plan'])
+        value = json.loads(path.read_text())
+        value['delivery']['guard'] = {'checkpoint_seconds': 1, 'checkpoint_responses': 2}
+        raw = tasks.encode(value); path.write_bytes(raw)
+        with patch.object(tasks, 'run_bounded') as launch:
+            with self.assertRaisesRegex(AgentStopped, 'unsupported_plan'):
+                tasks.execute_plan(path, tasks.digest(raw))
+        launch.assert_not_called()
+        self.assertFalse((path.parent / 'execution').exists())
+
+    def test_old_fence_based_plan_is_not_silently_reinterpreted(self):
+        plan = self.plan()
+        path = Path(plan['plan'])
+        value = json.loads(path.read_text())
+        value['delivery'].pop('completion_basis', None)
+        raw = tasks.encode(value); path.write_bytes(raw)
+        with patch.object(tasks, 'run_bounded', side_effect=AssertionError('unexpected launch')) as launch:
+            with self.assertRaisesRegex(AgentStopped, 'unsupported_plan'):
+                tasks.execute_plan(path, tasks.digest(raw))
+        launch.assert_not_called()
+        self.assertFalse((path.parent / 'execution').exists())
+
+    def test_saved_historical_partial_is_read_without_reclassification(self):
+        plan = self.plan()
+        path = Path(plan['plan']).parent / 'report.json'
+        old = {'status': 'PARTIAL', 'delivery': 'PARTIAL', 'findings': None,
+               'final_report_diagnostic': {'status': 'rejected', 'stage': 'envelope',
+                    'reason': 'checkpoint_not_final', 'envelope': 'checkpoint_fence'}}
+        runner.private_write(path, old)
+        before = path.read_bytes()
+        with patch.object(tasks, 'run_bounded') as launch:
+            report = tasks.read_report(plan['id'])
+        launch.assert_not_called()
+        self.assertEqual(report, {'report_path': str(path), **old})
+        self.assertEqual(path.read_bytes(), before)

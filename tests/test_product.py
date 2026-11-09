@@ -35,7 +35,8 @@ def emit(e): print(json.dumps(e), flush=True)
 emit({'type':'system','subtype':'init','tools':['Read','Glob','Grep','EndConversation']})
 emit({'type':'assistant','message':{'id':'synthetic-response','model':'deepseek-flash','content':[{'type':'tool_use','id':'synthetic-read','name':'Read','input':{'file_path':'price.py'}}]}})
 emit({'type':'user','message':{'content':[{'type':'tool_result','tool_use_id':'synthetic-read','content':'fully synthetic'}]}})
-emit({'type':'result','subtype':'success','is_error':False,'result':'Synthetic report only.','num_turns':2,'total_cost_usd':0.001,'usage':{'input_tokens':30,'output_tokens':10}})
+report={'schema':2,'assessment':'Synthetic report only.','reviewed_files':['price.py'],'findings':[],'coverage_gaps':['Associated tests not inspected.']}
+emit({'type':'result','subtype':'success','is_error':False,'result':json.dumps(report),'num_turns':2,'total_cost_usd':0.001,'usage':{'input_tokens':30,'output_tokens':10}})
 ''')
         self.claude.chmod(0o700)
         with patch.object(config.platform, 'system', return_value='Darwin'):
@@ -64,7 +65,8 @@ emit({'type':'result','subtype':'success','is_error':False,'result':'Synthetic r
         self.assertNotIn('source_root', plan)
         report = tasks.execute_plan(plan['plan'], plan['sha256'])
         self.assertEqual(report['status'], 'COMPLETED')
-        self.assertEqual(report['findings'], 'Synthetic report only.')
+        self.assertEqual(report['review']['assessment'], 'Synthetic report only.')
+        self.assertIn('Synthetic report only.', report['findings'])
         self.assertTrue(report['snapshot_unchanged'])
         self.assertEqual(report['observation']['read_results'], ['price.py'])
         self.assertIsNone(report['observation']['http_requests'])
@@ -82,6 +84,12 @@ emit({'type':'result','subtype':'success','is_error':False,'result':'Synthetic r
         self.assertIn('--safe-mode', args)
         self.assertEqual(args[args.index('--tools') + 1], 'Read,Glob,Grep')
         self.assertEqual(args[args.index('--max-turns') + 1], '4')
+        self.assertEqual(args[args.index('--thinking') + 1], 'disabled')
+        self.assertEqual(env['MAX_THINKING_TOKENS'], '0')
+        self.assertEqual(env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'], '1800')
+        self.assertEqual(args[args.index('--max-budget-usd') + 1], '0.1')
+        self.assertNotIn('delivery_policy', invocation)
+        self.assertEqual(json.loads(env['CLAUDE_CODE_EXTRA_BODY']), {'thinking': {'type': 'disabled'}})
         self.assertEqual(args[args.index('--setting-sources') + 1], '')
         self.assertEqual(args[args.index('--mcp-config') + 1], '{"mcpServers":{}}')
         self.assertEqual(env['CLAUDE_CONFIG_DIR'], env['CLAUDE_SECURESTORAGE_CONFIG_DIR'])
@@ -159,7 +167,7 @@ emit({'type':'result','subtype':'success','is_error':False,'result':'Synthetic r
             'stdout':b'{"type":"result","subtype":"success","is_error":false,"result":"example"}\n','claude':{
             'capture_complete':True,'execution':'completed','unexpected_init_tools':True,
             'tools_requested':{'other':1},'models_observed':['deepseek-flash']}}
-        self.assertEqual(tasks.summarize(result, ['price.py'], True)['status'], 'PARTIAL')
+        self.assertEqual(tasks.summarize(result, ['price.py'], True)['status'], 'FAILED')
         result['claude']['capture_complete'] = False
         self.assertEqual(tasks.summarize(result, ['price.py'], True)['status'], 'FAILED')
 

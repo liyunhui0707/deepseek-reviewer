@@ -3,12 +3,13 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import selectors
 import signal
 import subprocess
 import threading
 import time
-from .safety import validate_path, validate_checkpoint, ReviewError
+from .safety import validate_path, validate_checkpoint, parse_review_report, ReviewError
 
 MAX_CAPTURE = 256 * 1024
 MAX_CLAUDE_STREAM = 4 * 1024 * 1024
@@ -49,6 +50,7 @@ class _ClaudeStreamCapture:
         self.read_results = set()
         self.models = set()
         self.assistant_text = False
+        self.thinking_content_observed = False
         self.result_subtype = None
         self.final_report = False
         self.num_turns = self.cost = None
@@ -59,23 +61,53 @@ class _ClaudeStreamCapture:
         self.unexpected_init_tools = None
         self.checkpoint = None
         self.checkpoints_observed = self.checkpoints_rejected = 0
+        self.checkpoint_revision_error = None
 
     def _checkpoint(self, text):
-        # A whole ordinary text block must opt in. Never extract from thinking,
-        # tool results, unmarked prose or streaming deltas/incomplete JSON.
-        text = text.strip()
-        if not text.startswith('```review-checkpoint'): return
+        # Only public report artifacts can revise a report. Ordinary JSON
+        # status messages, tool results and thinking are not report revisions.
+        text = text.replace('\r\n', '\n').strip()
+        markers = re.findall(r'(?m)^[ \t]*```(review-checkpoint|review-report|json)[ \t]*$', text)
+        if not markers and not text.startswith('{'): return
+        category = 'format'
         try:
-            if len(text.encode()) > 16432 or not text.startswith('```review-checkpoint\n') or not text.endswith('\n```'):
+            if len(text.encode()) > 32768 or len(markers) > 1:
                 raise ValueError
-            value = json.loads(text[len('```review-checkpoint\n'):-4],
-                               object_pairs_hook=self._object, parse_constant=self._constant)
-            self.checkpoint = validate_checkpoint(value, self.progress_files)
+            body = text
+            if markers:
+                match = re.search(r'(?m)^[ \t]*```' + markers[0] + r'[ \t]*\n(.*?)\n[ \t]*```[ \t]*(?=\n|$)', text, re.S)
+                if not match: raise ValueError
+                body = match[1]
+            value = json.loads(body, object_pairs_hook=self._object, parse_constant=self._constant)
+            if (not markers or markers == ['json']) and (not isinstance(value, dict) or 'schema' not in value
+                    or not {'assessment', 'findings', 'reviewed_files'} & value.keys()):
+                return
+            category = 'validation'
+            if isinstance(value, dict) and value.get('schema') == 2:
+                # Same content/envelope checks as the terminal report; only its
+                # event provenance determines provisional versus final delivery.
+                diagnostic = {}
+                try:
+                    candidate = parse_review_report(text, self.progress_files, self.read_results,
+                                                    diagnostic=diagnostic)
+                except ReviewError:
+                    category = ('sensitive_content' if diagnostic.get('stage') == 'content' else
+                                'format' if diagnostic.get('stage') in ('input', 'envelope', 'json') else 'validation')
+                    raise
+            else:
+                # Retain legacy schema-1 checkpoint compatibility; it can never
+                # satisfy the current product's terminal schema-2 requirement.
+                candidate = validate_checkpoint(value, self.progress_files)
+                if not markers: raise ValueError
+            # Commit only a validated cumulative revision, including an explicit
+            # retraction with empty findings. Never clear a safe prior artifact.
+            self.checkpoint = candidate
+            self.checkpoint_revision_error = None
             self.checkpoints_observed += 1
-        except (ValueError, TypeError, UnicodeError, RecursionError, ReviewError):
-            # A failed revision may have retracted earlier claims. Do not fall
-            # back to an older checkpoint as though it were still current.
-            self.checkpoint = None
+        except (ValueError, TypeError, UnicodeError, RecursionError, ReviewError) as exc:
+            if not markers and category == 'format': return
+            self.checkpoint_revision_error = ('sensitive_content' if isinstance(exc, ReviewError)
+                                              and str(exc) == 'sensitive_content' else category)
             self.checkpoints_rejected += 1
 
     def _observe(self, event):
@@ -110,6 +142,8 @@ class _ClaudeStreamCapture:
                     self.models.add(message['model'] if message['model'] in ('deepseek-flash', 'deepseek-flash[1m]') else 'unrecognized')
             for block in content:
                 if not isinstance(block, dict): continue
+                if event['type'] == 'assistant' and block.get('type') in ('thinking', 'redacted_thinking'):
+                    self.thinking_content_observed = True
                 if event['type'] == 'assistant' and block.get('type') == 'text' and isinstance(block.get('text'), str):
                     self.assistant_text |= bool(block['text'])
                     self._checkpoint(block['text'])
@@ -162,7 +196,10 @@ class _ClaudeStreamCapture:
         return {'execution': execution, 'result_present': self.result_seen, 'capture_complete': capture_complete,
                 'result_subtype': self.result_subtype, 'final_report_available': self.final_report and capture_complete,
                 'assistant_text_observed': self.assistant_text, 'coverage': 'not_assessed',
+                'thinking_content_observed': self.thinking_content_observed,
+                'thinking_progress_events': self.dropped_events,
                 'checkpoints_observed': self.checkpoints_observed, 'checkpoints_rejected': self.checkpoints_rejected,
+                'checkpoint_revision_error': self.checkpoint_revision_error,
                 'authentication': 'unknown', 'http_requests': None, 'provider_billed_usd': None,
                 'model_responses_observed': len(self.response_ids), 'models_observed': sorted(self.models),
                 'tools_requested': dict(self.tool_counts), 'tool_results_observed': self.tool_results,

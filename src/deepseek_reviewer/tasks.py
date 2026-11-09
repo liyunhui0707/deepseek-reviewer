@@ -10,7 +10,8 @@ from . import __version__
 from .config import app_home, load_runtime, private_directory, private_read, state_lock, ENDPOINT, MODEL
 from .prepare import build_review_task, prepare_claude_review
 from .runner import AgentStopped, private_write, run_bounded
-from .safety import selected_paths, read_selected, safe_text, scan_secrets, validate_checkpoint, ReviewError
+from .safety import (selected_paths, read_selected, safe_text, scan_secrets, validate_checkpoint,
+                     parse_review_report, render_review, ReviewError)
 
 
 # Presets are planning defaults, not promises of completion or API billing caps.
@@ -85,16 +86,18 @@ def create_plan(root, names, objective, revision, constraints, evidence, limits,
     for p in sorted(snapshot.rglob('*'), reverse=True):
         if p.is_dir(): p.chmod(0o500)
     snapshot.chmod(0o500)
-    plan = {'schema': 1, 'product_version': __version__, 'id': run.name,
+    plan = {'schema': 2, 'product_version': __version__, 'id': run.name,
             'endpoint': ENDPOINT, 'model': MODEL, 'files': hashes,
             'bytes': sum(map(len, materials.values())), 'task': task, 'limits': limits,
             'runtime_sha256': digest(encode(runtime)), 'profile': profile, 'focus_files': list(focus_files),
-            'delivery': {'forced_finalization_supported': False,
+            'delivery': {'forced_finalization_supported': False, 'report_schema': 2,
+                         'completion_basis': 'validated_terminal_result_v1',
+                         'thinking_requested': 'disabled', 'guard': None,
                          'partial_review': 'Latest validated explicit checkpoint; not a final report.',
                          'scope_advisory': ('Narrow to one risk or split before approval; scope exceeds profile guidance.'
                              if len(names) > (6 if profile == 'quick' else 12)
                              or sum(map(len, materials.values())) > (48 if profile == 'quick' else 96) * 1024
-                             else 'Focused scope; completion still not guaranteed.')}}
+                             else 'Within size guidance only; this is not a completion forecast.')}}
     raw = encode(plan)
     private_write(run / 'plan.json', raw)
     return {'plan': str(run / 'plan.json'), 'sha256': digest(raw), **plan,
@@ -111,34 +114,62 @@ def load_plan(path, expected_sha256):
     if digest(raw) != expected_sha256:
         raise AgentStopped('plan_changed')
     plan = json.loads(raw)
-    if (plan['schema'] != 1 or plan['product_version'] != __version__ or plan['id'] != p.parent.name
+    if (plan['schema'] != 2 or plan['product_version'] != __version__ or plan['id'] != p.parent.name
             or plan['endpoint'] != ENDPOINT or plan['model'] != MODEL):
         raise AgentStopped('unsupported_plan')
     validate_limits(plan['limits'])
+    if (not isinstance(plan.get('delivery'), dict)
+            or ('guard' not in plan['delivery'] or plan['delivery']['guard'] is not None)
+            or plan['delivery'].get('thinking_requested') != 'disabled'
+            or plan['delivery'].get('completion_basis') != 'validated_terminal_result_v1'
+            or plan['delivery'].get('report_schema') != 2):
+        raise AgentStopped('unsupported_plan')
     return p.parent, plan
 
 
-def summarize(result, files, unchanged):
+def summarize(result, files, unchanged, *, require_report=False):
     """Never persist raw tool contents, thinking, environment, or stderr."""
-    observed = result.get('claude', {})
+    observed = dict(result.get('claude', {}))
     final = None
+    review = None
+    invalid_report = False
+    diagnostic = {'status': 'not_checked', 'stage': 'capture',
+                  'reason': 'no_successful_result' if observed.get('capture_complete') else 'incomplete_capture',
+                  'envelope': 'not_inspected'}
     # Invalid/truncated capture never yields an accepted report.
     if observed.get('capture_complete'):
         for line in result['stdout'].splitlines():
             event = json.loads(line)
             if (event.get('type') == 'result' and event.get('subtype') == 'success'
-                    and event.get('is_error') is False and isinstance(event.get('result'), str)):
-                final = event['result'].strip() or None
+                    and event.get('is_error') is False):
+                text = event.get('result')
+                final = (text.strip() or None) if isinstance(text, str) else None
+                if require_report and not final:
+                    invalid_report = True
+                    diagnostic.update(status='rejected', stage='input',
+                                      reason='empty_result' if isinstance(text, str) else 'non_text_result')
     withheld = False
     if final:
         try: scan_secrets(final)
         except ReviewError:
             final, withheld = None, True
+            diagnostic.update(status='rejected', stage='content', reason='sensitive_content')
+    if final and require_report:
+        try:
+            review = parse_review_report(final, files, observed.get('read_results', ()), diagnostic=diagnostic)
+            final = render_review(review)
+        except (ReviewError, ValueError, TypeError, UnicodeError, RecursionError):
+            final, invalid_report = None, True
+            if diagnostic['status'] != 'rejected' or diagnostic['reason'] is None:
+                diagnostic.update(status='rejected', stage='validation', reason='unclassified_validation_error')
     tools_ok = (observed.get('unexpected_init_tools') is False
                 and observed.get('tools_requested', {}).get('other') == 0)
     model_ok = bool(observed.get('models_observed')) and 'unrecognized' not in observed['models_observed']
     cleanup_ok = result.get('cleanup', {}).get('completed', True)
+    if not (tools_ok and model_ok and unchanged and cleanup_ok):
+        final, review = None, None
     partial = None
+    partial_from_terminal = False
     partial_withheld = result.get('checkpoint') is not None or bool(observed.get('checkpoints_rejected'))
     # A validated prefix can survive an ordinary execution limit, but never a
     # corrupted/oversized stream, unexpected tools, model or changed snapshot.
@@ -146,12 +177,26 @@ def summarize(result, files, unchanged):
             and tools_ok and model_ok and unchanged and cleanup_ok and result.get('checkpoint') is not None):
         try:
             partial = validate_checkpoint(result['checkpoint'], files)
+            if require_report and (partial['schema'] != 2
+                    or not set(partial['reviewed_files']) <= set(observed.get('read_results', ()))
+                    or any(item['file'] not in partial['reviewed_files'] for item in partial['findings'])):
+                partial = None
+                raise ReviewError('invalid_checkpoint')
             partial_withheld = False
         except (ReviewError, ValueError, TypeError, UnicodeError, RecursionError):
             partial_withheld = True
     completed = (result['exit_code'] == 0 and result['failure'] is None
                  and observed.get('execution') == 'completed' and final
                  and tools_ok and model_ok and unchanged and cleanup_ok)
+    # A validated terminal artifact cannot override a failed process. Preserve
+    # its content as partial only; never substitute an earlier assistant artifact
+    # for missing/invalid terminal content to manufacture completion.
+    if require_report:
+        if review and not completed:
+            partial, partial_withheld = review, False
+            partial_from_terminal = True
+            final, review = None, None
+        observed['final_report_available'] = bool(completed)
     status = 'COMPLETED' if completed else 'PARTIAL' if final or partial else 'FAILED'
     reason = ((observed.get('result_subtype') if result['failure'] == 'claude_result_error' else result['failure'])
               or (observed.get('result_subtype') if observed.get('result_subtype') != 'success' else None)
@@ -159,6 +204,7 @@ def summarize(result, files, unchanged):
               or ('model_unverified' if not model_ok else None)
               or ('snapshot_changed' if not unchanged else None)
               or ('report_withheld' if withheld else None)
+              or ('invalid_review_report' if invalid_report else None)
               or ('process_nonzero' if result['exit_code'] not in (None, 0) else None)
               or ('missing_report' if not final else None))
     read_files = sorted(set(observed.get('read_results', ())) & set(files))
@@ -171,8 +217,12 @@ def summarize(result, files, unchanged):
             'snapshot_unchanged': unchanged, 'credential_like_report_withheld': withheld,
             'stderr_bytes': len(stderr), 'stderr_sha256': digest(stderr),
             'observation': observed, 'approved_files': sorted(files),
-            'findings': final, 'partial_review': partial,
+            'findings': final, 'review': review, 'partial_review': partial,
+            'final_report_diagnostic': diagnostic,
+            'delivery': 'FINAL' if completed else 'PARTIAL' if partial or final else 'NONE',
             'partial_review_withheld': partial_withheld,
+            'partial_review_stale': bool(partial and not partial_from_terminal
+                and (observed.get('checkpoint_revision_error') or invalid_report or withheld)),
             'partial_review_note': 'Provisional model claims, may be superseded; not a final report or review approval.',
             'quality': 'requires_primary_agent_verification',
             'coverage': 'read tool success does not certify complete review',
@@ -205,7 +255,7 @@ def _execute_plan(path, expected_sha256, progress):
                      and not any(p.is_symlink() for p in snapshot.rglob('*')))
     except (OSError, ReviewError):
         unchanged = False
-    report = summarize(result, plan['files'], unchanged)
+    report = summarize(result, plan['files'], unchanged, require_report=True)
     private_write(run / 'report.json', report)
     # Original bytes remain memory-only. They are never written to a logfile.
     return {'report_path': str(run / 'report.json'), **report}

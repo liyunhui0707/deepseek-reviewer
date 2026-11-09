@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0
+
+- Use one structured report contract for early opinions and the terminal result. Mark delivery complete only when the terminal report, observed reads, process exit and existing safety checks all pass; a fence label alone never decides completion.
+- Preserve safe partial opinions on ordinary limits and mark stale revisions explicitly. Do not substitute earlier opinions for a missing/invalid terminal report or turn a budget/timeout failure into success. No automatic retry or extra reporting call is added.
+- Diagnose rejected final reports with fixed, non-sensitive categories. Keep ambiguous JSON, unsafe content, unknown fields and out-of-scope claims rejected; never save hidden reasoning as Findings.
+- Explicitly request disabled thinking through the pinned Claude client's provider request configuration. Resource ceilings, Restricted permissions, credentials and the fixed DeepSeek route remain unchanged.
+- Migration: old saved reports remain readable and unchanged. Prepare and authorize a new plan for any old, unexecuted plan; consumed attempts cannot be reused. Update the managed Codex Skill after installing the CLI.
+- Acceptance: 104 offline tests and one authorized narrow real-provider run delivered a validated final report with normal exit. This verifies that run, not guaranteed completion, finding accuracy, complete coverage or a provider billing cap.
+
 ## 1.2.1
 
 - Fix a first-setup false rejection: Claude Code 2.1.312 supports `--max-turns` but hides it from `--help`. Keep the pinned version, visible safety-flag checks and actual invocation limit; do not infer unsupported capability from this hidden option.

@@ -13,6 +13,9 @@ from .safety import ReviewError
 
 
 HINTS = {
+    'review_checkpoint_missing': 'Historical experimental no-opinion stop. It did not deliver a report; do not relaunch automatically.',
+    'invalid_review_report': 'The client ended, but did not deliver a valid assessment, findings and coverage report. Execution success is not review success.',
+    'unsupported_plan': 'Prepare a new plan and confirm its exact scope and delivery policy. Older plans are not silently reinterpreted; saved reports remain readable.',
     'runtime_missing_or_unsafe_run_configure': 'Run deepseek-reviewer setup. If a registration exists, inspect it; do not delete it to bypass checks.',
     'claude_not_found': 'Install Claude Code from its official publisher, then run setup --claude /absolute/path/to/the/compatible/binary.',
     'unsupported_claude_version': 'Use the documented compatible Claude version. This tool never silently upgrades or downgrades Claude.',
@@ -64,9 +67,15 @@ def render(value):
     lines = [str(value.get('status', 'OK'))]
     if 'error' in value: lines.append('Reason: ' + value['error'])
     if 'findings' in value:
+        if value.get('delivery') == 'NONE':
+            lines.append('Review delivery failed: file reads and execution progress are not review opinions.')
         reason = value.get('stop_reason')
         if reason:
             lines.extend(['Reason: ' + reason, HINTS.get(reason, 'Inspect the report before deciding on another review.')])
+        diagnostic = value.get('final_report_diagnostic', {})
+        if diagnostic.get('status') == 'rejected':
+            lines.append('Final report validation: ' + diagnostic['stage'] + '/' + diagnostic['reason']
+                         + ' (' + diagnostic['envelope'] + ')')
         observation = value.get('observation', {})
         def known(item): return 'unknown' if item is None else str(item)
         lines.append('Model: ' + (', '.join(observation.get('models_observed', [])) or 'unverified'))
@@ -85,6 +94,9 @@ def render(value):
         partial = value.get('partial_review')
         if partial is not None:
             lines.append('\nPartial review available (provisional; final report supersedes it):')
+            if value.get('partial_review_stale'):
+                lines.append('WARNING: later output was not validated; this is an earlier artifact, not an accepted final conclusion.')
+            if partial.get('assessment'): lines.append(partial['assessment'])
             for finding in partial['findings']:
                 lines.extend([f"{finding['severity']} [{finding['kind']}] {finding['file']}:{finding['line']}",
                               finding['evidence'], finding['explanation'], 'Suggestion: ' + finding['suggestion']])
@@ -104,6 +116,8 @@ def render(value):
         if 'delivery' in value:
             lines.extend(['Profile: ' + value['profile'] + '; priority files: ' + ', '.join(value['focus_files']),
                           value['delivery']['scope_advisory'],
+                          'Thinking requested: ' + value['delivery'].get('thinking_requested', 'legacy default'),
+                          'No early termination based on missing checkpoints; original execution limits apply.',
                           'Early checkpoints requested; forced finalization before limits is not supported.'])
     for key in ('command', 'installed', 'report_path', 'note', 'next'):
         if value.get(key): lines.append(key + ': ' + str(value[key]))

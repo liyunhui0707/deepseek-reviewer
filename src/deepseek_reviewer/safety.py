@@ -1,4 +1,5 @@
 """No-follow snapshot collection; never discovers credentials."""
+import json
 import os
 from pathlib import Path
 import re
@@ -124,18 +125,26 @@ def validate_checkpoint(value, approved_files):
     This validates shape/disclosure, not the model's claims or cited line accuracy.
     Unknown fields (including reasoning) are rejected rather than logged.
     """
-    import json
     def text(item):
-        return (isinstance(item, str) and 0 < len(item) <= 2000
+        return (isinstance(item, str) and bool(item.strip()) and len(item) <= 2000
                 and not any(ord(c) < 32 and c not in '\n\t' or ord(c) == 127 for c in item)
                 and not re.search(r'/(?:Users|home|private|tmp)/', item))
-    if (not isinstance(value, dict) or set(value) != {'schema', 'findings', 'coverage_gaps'}
-            or type(value['schema']) is not int or value['schema'] != 1
+    version = value.get('schema') if isinstance(value, dict) else None
+    fields = {'schema', 'findings', 'coverage_gaps'}
+    if version == 2: fields |= {'assessment', 'reviewed_files'}
+    if (not isinstance(value, dict) or set(value) != fields
+            or type(version) is not int or version not in (1, 2)
             or not isinstance(value['findings'], list) or len(value['findings']) > 12
             or not isinstance(value['coverage_gaps'], list) or len(value['coverage_gaps']) > 20
             or not all(text(gap) for gap in value['coverage_gaps'])
             or len(json.dumps(value, ensure_ascii=False).encode()) > 16384):
         raise ReviewError('invalid_checkpoint')
+    if version == 2:
+        reviewed = value['reviewed_files']
+        if (not text(value['assessment']) or not isinstance(reviewed, list) or not reviewed
+                or not all(isinstance(name, str) and name in approved_files for name in reviewed)
+                or len(reviewed) != len(set(reviewed))):
+            raise ReviewError('invalid_checkpoint')
     fields = {'kind', 'severity', 'file', 'line', 'evidence', 'explanation', 'suggestion'}
     for finding in value['findings']:
         if (not isinstance(finding, dict) or set(finding) != fields
@@ -147,6 +156,84 @@ def validate_checkpoint(value, approved_files):
             raise ReviewError('invalid_checkpoint')
     scan_secrets(value)
     return value
+
+
+def parse_review_report(text, approved_files, read_files, *, diagnostic=None):
+    """Accept an explicit public report, not progress text or hidden reasoning.
+
+    One schema for public revisions and terminal results. Fence labels carry no
+    completion authority; the caller must verify terminal execution separately.
+    Accept bare JSON or one review-report/json/legacy review-checkpoint fence.
+    Diagnostic values are fixed labels, never exception text or model content.
+    Structural validity and observed reads do not prove review quality.
+    """
+    detail = diagnostic if diagnostic is not None else {}
+    detail.update(status='rejected', stage='input', reason=None, envelope='not_inspected')
+
+    def reject(stage, reason):
+        detail.update(stage=stage, reason=reason)
+        raise ReviewError('invalid_review_report')
+
+    if not isinstance(text, str): reject('input', 'non_text_result')
+    try: size = len(text.encode('utf-8'))
+    except UnicodeError: reject('input', 'invalid_encoding')
+    if size > 32768: reject('input', 'report_too_large')
+    if not text.strip(): reject('input', 'empty_result')
+    try: scan_secrets(text)
+    except ReviewError: reject('content', 'sensitive_content')
+    text = text.replace('\r\n', '\n').strip()
+    if text.startswith('{'):
+        detail['envelope'] = 'bare_json'
+        body = text
+    else:
+        # Count every fence, rather than selecting a favorable report from
+        # multiple blocks that might contradict or supersede each other.
+        fences = list(re.finditer(r'(?m)^[ \t]*```([^\n`]*)$', text))
+        if not fences:
+            detail['envelope'] = 'unrecognized'
+            reject('envelope', 'missing_report_object')
+        label = fences[0][1].strip()
+        detail['envelope'] = {'review-report': 'review_report_fence', 'json': 'json_fence',
+                              'review-checkpoint': 'checkpoint_fence'}.get(label, 'unsupported_fence')
+        if len(fences) > 2: reject('envelope', 'multiple_fences')
+        if len(fences) != 2 or fences[1][1].strip(): reject('envelope', 'incomplete_fence')
+        if label not in ('review-report', 'json', 'review-checkpoint'):
+            reject('envelope', 'unsupported_fence')
+        body = text[fences[0].end():fences[1].start()]
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result: reject('json', 'duplicate_key')
+            result[key] = value
+        return result
+    def constant(_): reject('json', 'nonfinite_number')
+    try: value = json.loads(body, object_pairs_hook=unique, parse_constant=constant)
+    except (ValueError, UnicodeError, RecursionError): reject('json', 'invalid_json')
+    if not isinstance(value, dict) or type(value.get('schema')) is not int or value['schema'] != 2:
+        reject('schema', 'unsupported_schema')
+    try: validate_checkpoint(value, approved_files)
+    except ReviewError as exc:
+        if exc.code == 'sensitive_content': reject('content', 'sensitive_content')
+        reject('schema', 'invalid_schema_or_values')
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        reject('schema', 'invalid_schema_or_values')
+    if not set(value['reviewed_files']) <= set(read_files): reject('evidence', 'unobserved_read')
+    if any(item['file'] not in value['reviewed_files'] for item in value['findings']):
+        reject('evidence', 'finding_not_reviewed')
+    detail.update(status='accepted', stage='complete', reason=None)
+    return value
+
+
+def render_review(value):
+    lines = [value['assessment']]
+    for item in value['findings']:
+        lines.extend([f"{item['severity']} [{item['kind']}] {item['file']}:{item['line']}",
+                      item['evidence'], item['explanation'], 'Suggestion: ' + item['suggestion']])
+    if not value['findings']: lines.append('No supported findings reported; not an approval.')
+    lines.append('Reviewed files (model claim): ' + ', '.join(value['reviewed_files']))
+    lines.extend('Coverage gap: ' + gap for gap in value['coverage_gaps'])
+    return '\n'.join(lines)
 
 def safe_text(data):
     if len(data) > MAX_BYTES:

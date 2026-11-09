@@ -7,6 +7,7 @@ from importlib.resources import files
 from .runner import AgentStopped, private_write, MAX_EXECUTION_SECONDS, MAX_STDOUT_BYTES, MAX_STDOUT_STREAM_BYTES, MAX_JSONL_RECORD_BYTES
 from .safety import validate_path, ReviewError
 
+
 def build_review_task(*, objective, revision, approved_files, required_files, constraints,
                       test_evidence, timeout, max_turns, max_budget_usd, max_output_tokens, effort=None):
     """Shared preparation-time size check and launch prompt; no file/model IO."""
@@ -18,21 +19,26 @@ def build_review_task(*, objective, revision, approved_files, required_files, co
         'and do not treat the available file list as an exhaustive reading checklist. '
         'Do not repeat identical searches or reads without a specific unresolved question. '
         'After the first useful source/diff read, BEFORE another tool batch, emit a public cumulative '
-        'checkpoint as a standalone text block in this exact format:\n'
-        '```review-checkpoint\n'
-        '{"schema":1,"findings":[{"kind":"finding","severity":"P2","file":"approved-relative-path",'
+        'review report as a standalone text block in this exact format:\n'
+        '```review-report\n'
+        '{"schema":2,"assessment":"Concise evidence-based assessment, not a plan to investigate",'
+        '"reviewed_files":["approved-relative-path"],"findings":[{"kind":"finding","severity":"P2","file":"approved-relative-path",'
         '"line":1,"evidence":"brief source evidence","explanation":"observable problem",'
         '"suggestion":"specific remedy"}],"coverage_gaps":["what remains uncertain"]}\n```\n'
         'Use kind finding, hypothesis or advice and severity P0/P1/P2/P3. Use an empty findings list '
-        'when none is supported. No extra fields, private paths, secrets or chain of thought. '
-        'Keep checkpoints under 16 KiB, with at most 12 concise findings and 20 gaps. Each checkpoint '
+        'when none is supported, with an assessment of the evidence actually read. reviewed_files must '
+        'contain only approved files successfully read by you; this is not a full-coverage assertion. '
+        'No extra fields, private paths, secrets or chain of thought. '
+        'Keep each report under 16 KiB, with at most 12 concise findings and 20 gaps. Each report '
         'replaces the previous one: carry forward still-supported findings and retract disproven ones. '
-        'Publish an updated checkpoint after each targeted verification batch, then a concise final report. '
-        'Aim for at most two follow-up verification batches after the first checkpoint. If evidence remains '
+        'Use this same format throughout, updating the report after each targeted verification batch. '
+        'Your terminal response must contain the complete latest report in this same single block '
+        '(or bare JSON), not a reference to earlier text or a promise to continue. '
+        'A progress message is not a report. '
+        'Aim for at most two follow-up verification batches after the first report. If evidence remains '
         'missing, report the gap rather than broadening exploration. '
         'Do not expose hidden reasoning. Missing material is a coverage gap, not permission to read outside. '
-        'The client can stop abruptly at its limits; checkpoints must be useful on their own. '
-        'This requested exploration/report cadence is not an enforced turn or cost reservation.\n'
+        'The client can stop abruptly at its limits; each report must be useful on its own. '
         'Return findings (severity, file:line, evidence, explanation, suggested fix), or explicitly no '
         'supported findings; include reviewed files, coverage gaps and test-evidence limitations. '
         'Separate confirmed defects, hypotheses and optional design advice. Never claim tests were run by you.\n'
@@ -53,9 +59,9 @@ def prepare_claude_review(snapshot, state, *, objective, revision, approved_file
     approved_files is the caller-approved relative-path -> SHA-256 mapping, not
     a directory to auto-collect. Use a fresh private state outside the immutable
     snapshot. This admission check is not OS isolation or disclosure approval.
-    effort=None preserves earlier calls; 'low' opts into the pinned client's
-    native effort support for this custom model. Provider behavior is not proved
-    by preparation, and a native unsupported-effort retry can omit the field.
+    The pinned client omits thinking for this custom model despite the CLI flag.
+    Its documented extra-body override sends the fixed disabled value; verified
+    against a local mock. Provider behavior still requires live acceptance.
     """
     if (type(timeout) not in (int, float) or not 0 < timeout <= MAX_EXECUTION_SECONDS
             or type(max_turns) is not int or not 1 <= max_turns <= 32
@@ -124,6 +130,9 @@ def prepare_claude_review(snapshot, state, *, objective, revision, approved_file
            'CLAUDE_CONFIG_DIR': str(state / 'config'), 'CLAUDE_SECURESTORAGE_CONFIG_DIR': str(state / 'config'),
            'ANTHROPIC_BASE_URL': 'https://api.deepseek.com/anthropic', 'ANTHROPIC_MODEL': 'deepseek-flash[1m]',
            'CLAUDE_CODE_MAX_OUTPUT_TOKENS': str(max_output_tokens), 'CLAUDE_CODE_MAX_RETRIES': '0',
+           'MAX_THINKING_TOKENS': '0',
+           # Fixed provider field, never inherited from the caller's environment.
+           'CLAUDE_CODE_EXTRA_BODY': '{"thinking":{"type":"disabled"}}',
            'CLAUDE_CODE_API_KEY_HELPER_TTL_MS': '300000', 'DISABLE_AUTOUPDATER': '1',
            'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1', 'DISABLE_TELEMETRY': '1',
            'DISABLE_ERROR_REPORTING': '1'}
@@ -136,6 +145,7 @@ def prepare_claude_review(snapshot, state, *, objective, revision, approved_file
                      '--settings', str(state / 'settings.json'), '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
                      '--disable-slash-commands', '--no-chrome', '--permission-mode', 'dontAsk',
                      '--tools', 'Read,Glob,Grep', '--model', 'deepseek-flash[1m]',
+                     '--thinking', 'disabled',
                      '--max-turns', str(max_turns), '--max-budget-usd', str(max_budget_usd),
                      '--no-session-persistence', '--output-format', 'stream-json', '--verbose'],
             'cwd': snapshot, 'env': env, 'task': task, 'timeout': timeout, 'claude_stream_json': True,
