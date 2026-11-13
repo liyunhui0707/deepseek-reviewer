@@ -4,7 +4,7 @@
 
 Codex prepares a scoped review. Claude Code runs DeepSeek with read-only file tools. Findings return to the same Codex session for verification and action.
 
-[Website](https://deepseek-reviewer.outerepoch3.chatgpt.site) · [Downloads](https://github.com/liyunhui0707/deepseek-reviewer/releases) · [中文使用说明](docs/guide.zh-CN.md) · [Security & privacy](SECURITY.md) · [Release notes](CHANGELOG.md)
+[Website](https://deepseek-reviewer.outerepoch3.chatgpt.site) · [Downloads](https://github.com/liyunhui0707/deepseek-reviewer/releases/tag/v1.4.0) · [中文使用说明](docs/guide.zh-CN.md) · [Security & privacy](SECURITY.md) · [Release notes](CHANGELOG.md)
 
 ```text
 Your Codex session → approved snapshot → Claude Code Restricted + DeepSeek
@@ -31,7 +31,7 @@ This is **static review**, not an automatic acceptance test. Findings need verif
 
 Claude Code and Codex are separate products, **not included** in this distribution. Obtain them from their official publishers. Review [Claude's setup documentation](https://code.claude.com/docs/en/setup) for installation/version management. This product does not install, downgrade, upgrade or log into either CLI.
 
-This guide covers **v1.4.0**. Select matching v1.4.0 assets when available in the release list. Earlier versions do not support every command below; use their versioned documentation or upgrade first.
+This guide covers the published **v1.4.0**. Download its matching release assets. Earlier versions do not support every command below; use their versioned documentation or upgrade first.
 
 ## Install
 
