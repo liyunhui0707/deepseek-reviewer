@@ -7,7 +7,7 @@ import tempfile
 import zipapp
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '1.3.0'
+VERSION = '1.4.0'
 
 
 def main():

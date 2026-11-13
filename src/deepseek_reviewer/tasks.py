@@ -7,6 +7,7 @@ import re
 import uuid
 
 from . import __version__
+from . import consent
 from .config import app_home, load_runtime, private_directory, private_read, state_lock, ENDPOINT, MODEL
 from .prepare import build_review_task, prepare_claude_review
 from .runner import AgentStopped, private_write, run_bounded
@@ -50,7 +51,7 @@ def validate_limits(limits):
         raise AgentStopped('invalid_limits')
 
 
-def create_plan(root, names, objective, revision, constraints, evidence, limits, *, focus_files=(), profile='standard'):
+def create_plan(root, names, objective, revision, constraints, evidence, limits, *, focus_files=(), profile='standard', use_consent=False):
     validate_limits(limits)
     runtime = load_runtime()  # Does not retrieve a credential.
     names = selected_paths(names)
@@ -59,6 +60,7 @@ def create_plan(root, names, objective, revision, constraints, evidence, limits,
             or len(set(focus_files)) != len(focus_files)):
         raise AgentStopped('focus_files')
     root = Path(root).absolute()
+    agreement = consent.check(root, names, limits, profile) if use_consent else None
     task = {'objective': objective, 'revision': revision, 'constraints': constraints, 'test_evidence': evidence}
     if any(not isinstance(v, str) or not v.strip() for v in task.values()):
         raise AgentStopped('task_required')
@@ -68,6 +70,9 @@ def create_plan(root, names, objective, revision, constraints, evidence, limits,
         raise AgentStopped('snapshot_total_limit')
     for body in materials.values():
         safe_text(body)
+    if agreement:
+        consent.check(root, names, limits, profile, size=sum(map(len, materials.values())),
+                      expected_sha256=agreement['sha256'])
     if len(encode(task)) + len(encode(list(names))) > 6000:
         raise AgentStopped('task_too_large')
     build_review_task(approved_files=names, required_files=focus_files, **task, **limits)
@@ -98,10 +103,12 @@ def create_plan(root, names, objective, revision, constraints, evidence, limits,
                              if len(names) > (6 if profile == 'quick' else 12)
                              or sum(map(len, materials.values())) > (48 if profile == 'quick' else 96) * 1024
                              else 'Within size guidance only; this is not a completion forecast.')}}
+    if agreement: plan['consent'] = agreement
     raw = encode(plan)
     private_write(run / 'plan.json', raw)
     return {'plan': str(run / 'plan.json'), 'sha256': digest(raw), **plan,
-            'next': 'Review the file list and task. Authorize sending this snapshot to DeepSeek before review.'}
+            'next': ('Project consent matched. Announce this exact scope and limits; proceed only for an explicit user request, once. Host/Keychain approvals still apply.'
+                     if agreement else 'Review the file list and task. Authorize sending this snapshot to DeepSeek before review.')}
 
 
 def load_plan(path, expected_sha256):
@@ -232,19 +239,36 @@ def summarize(result, files, unchanged, *, require_report=False):
             'billing': 'client estimate only; HTTP request count and provider bill are unknown'}
 
 
-def execute_plan(path, expected_sha256, progress=None):
+def execute_plan(path, expected_sha256, progress=None, *, use_consent=False):
     with state_lock(shared=True):
-        return _execute_plan(path, expected_sha256, progress)
+        return _execute_plan(path, expected_sha256, progress, use_consent)
 
 
-def _execute_plan(path, expected_sha256, progress):
+def _execute_plan(path, expected_sha256, progress, use_consent):
     run, plan = load_plan(path, expected_sha256)
     if (run / 'execution').exists():
         raise AgentStopped('attempt_consumed')
+    snapshot = run / 'snapshot'
+    agreement = plan.get('consent')
+    if 'consent' in plan:
+        if (not isinstance(agreement, dict) or set(agreement) != {'root', 'sha256'}
+                or not isinstance(agreement['root'], str) or not isinstance(agreement['sha256'], str)
+                or not re.fullmatch('[a-f0-9]{64}', agreement['sha256'])):
+            raise AgentStopped('consent_invalid')
+        names = selected_paths(list(plan['files']))
+        consent.check(agreement['root'], names, plan['limits'], plan['profile'],
+                      expected_sha256=agreement['sha256'])
+        # Recompute from bounded no-follow reads, not a caller's byte-count claim.
+        size = sum(len(read_selected(snapshot, name)) for name in names)
+        consent.check(agreement['root'], names, plan['limits'], plan['profile'],
+                      size=size, expected_sha256=agreement['sha256'])
+        if type(plan['bytes']) is not int or plan['bytes'] != size:
+            raise AgentStopped('consent_invalid')
+    elif use_consent:
+        raise AgentStopped('consent_plan_required')
     runtime = load_runtime()
     if digest(encode(runtime)) != plan['runtime_sha256']:
         raise AgentStopped('runtime_changed_since_approval')
-    snapshot = run / 'snapshot'
     kwargs = prepare_claude_review(snapshot, run / 'execution',
         approved_files=plan['files'], required_files=plan.get('focus_files', []),
         runtime=runtime, **plan['task'], **plan['limits'])

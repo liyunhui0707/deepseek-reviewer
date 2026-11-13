@@ -7,12 +7,23 @@ import re
 import sys
 
 from . import __version__
-from . import config, distribution, tasks
+from . import config, consent, distribution, tasks
 from .runner import AgentStopped
 from .safety import ReviewError
 
 
 HINTS = {
+    'consent_requires_terminal': 'Enroll project consent in your own interactive Terminal after reviewing scope and limits. Do not auto-confirm it from an agent.',
+    'consent_cancelled': 'No agreement saved. Nothing was sent and no credential was read.',
+    'consent_missing': 'No project agreement exists. Obtain task-specific disclosure/cost authorization, or enroll one in your own Terminal.',
+    'consent_revoked': 'Project consent was revoked. Do not retry or silently switch to another approval path.',
+    'consent_changed': 'The agreement changed after preparation. Inspect it and prepare a new plan; do not reuse this one.',
+    'consent_scope_exceeded': 'Selected paths, file count or bytes exceed project consent. Narrow the task or obtain separate explicit authorization for a new plan.',
+    'consent_limits_exceeded': 'Profile or resources exceed project consent. Keep the agreed limits or obtain separate explicit authorization.',
+    'consent_invalid': 'The agreement is incompatible, malformed or belongs to a replaced directory. Inspect it; do not bypass the check.',
+    'consent_scope': 'Select exact relative files or subdirectories, without wildcards, protected paths or traversal. Whole-project grants are not supported.',
+    'consent_root': 'Use a specific canonical project directory, not your home directory or one of its ancestors.',
+    'consent_plan_required': 'Prepare with --use-consent first; ordinary plans require explicit task-specific upload approval.',
     'review_checkpoint_missing': 'Historical experimental no-opinion stop. It did not deliver a report; do not relaunch automatically.',
     'invalid_review_report': 'The client ended, but did not deliver a valid assessment, findings and coverage report. Execution success is not review success.',
     'unsupported_plan': 'Prepare a new plan and confirm its exact scope and delivery policy. Older plans are not silently reinterpreted; saved reports remain readable.',
@@ -112,13 +123,17 @@ def render(value):
                       'Files (' + str(len(value['files'])) + ', ' + str(value['bytes']) + ' bytes): ' + ', '.join(value['files']),
                       'Limits: ' + json.dumps(value['limits']),
                       'Endpoint: ' + value['endpoint'], 'Plan: ' + value['plan'], 'Plan SHA-256: ' + value['sha256'],
-                      'Preparation is offline. Source disclosure and a paid call still require authorization.'])
+                      ('Project agreement matched. An explicit user request is still required; announce scope, then execute once without duplicate conversation approval.'
+                       if value.get('consent') else 'Preparation is offline. Source disclosure and a paid call still require authorization.')])
         if 'delivery' in value:
             lines.extend(['Profile: ' + value['profile'] + '; priority files: ' + ', '.join(value['focus_files']),
                           value['delivery']['scope_advisory'],
                           'Thinking requested: ' + value['delivery'].get('thinking_requested', 'legacy default'),
                           'No early termination based on missing checkpoints; original execution limits apply.',
                           'Early checkpoints requested; forced finalization before limits is not supported.'])
+    if 'policy' in value:
+        lines.extend(['Project agreement: ' + json.dumps(value['policy'], ensure_ascii=False, indent=2),
+                      'Agreement SHA-256: ' + value['sha256']])
     for key in ('command', 'installed', 'report_path', 'note', 'next'):
         if value.get(key): lines.append(key + ': ' + str(value[key]))
     return terminal_text('\n'.join(lines))
@@ -190,6 +205,12 @@ def parser():
     c.add_argument('--expected-runtime-sha256')
     c = sub.add_parser('credentials', help='Interactive Terminal only; native Keychain save/replace/remove')
     c.add_argument('action', choices=['save', 'replace', 'remove'])
+    c = sub.add_parser('consent', help='Optional project disclosure agreement; enable requires your interactive Terminal, no credentials/models')
+    c.add_argument('action', choices=['enable', 'status', 'revoke'])
+    c.add_argument('--root', type=Path, required=True)
+    c.add_argument('--file', action='append', default=[], dest='files')
+    c.add_argument('--directory', action='append', default=[], dest='directories')
+    c.add_argument('--profile', choices=tuple(tasks.PROFILES), default='quick')
     c = sub.add_parser('prepare', help='Copy only explicitly selected files into a private review snapshot')
     c.add_argument('--root', type=Path, required=True)
     c.add_argument('--file', action='append', required=True, dest='names')
@@ -197,8 +218,9 @@ def parser():
     c.add_argument('--revision', default='explicitly selected working files')
     c.add_argument('--constraints', default='Static review only. Do not change files or run tests.')
     c.add_argument('--test-evidence', default='No local test evidence supplied; do not infer tests passed.')
-    c.add_argument('--profile', choices=tuple(tasks.PROFILES), default='standard',
+    c.add_argument('--profile', choices=tuple(tasks.PROFILES),
                    help='quick: 180s/8 turns/4000 output/$0.25; standard (unchanged defaults): 300s/12/16000/$0.50. Not completion guarantees.')
+    c.add_argument('--use-consent', action='store_true', help='Require the enrolled project agreement; no automatic fallback or enrollment')
     c.add_argument('--focus-file', action='append', default=[], dest='focus_files',
                    help='Prioritize up to three paths already selected by --file; other selected files remain available')
     c.add_argument('--timeout', type=int)
@@ -209,7 +231,9 @@ def parser():
     c = sub.add_parser('review', help='Send one approved snapshot to DeepSeek; one Claude process, no relaunch')
     c.add_argument('--plan', type=Path, required=True)
     c.add_argument('--plan-sha256', required=True)
-    c.add_argument('--approve-upload', action='store_true', required=True)
+    mode = c.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--approve-upload', action='store_true', help='Use explicit task-specific disclosure/cost approval')
+    mode.add_argument('--use-consent', action='store_true', help='Recheck the project agreement bound to this plan')
     c = sub.add_parser('report', help='Read a saved report; never resume or launch a model')
     c.add_argument('--id', required=True)
     sub.add_parser('install', help='Install this verified release into ~/.local; no PATH edits')
@@ -253,18 +277,25 @@ def main(argv=None):
                   'next': 'No credentials changed. Run doctor; enroll your key with credentials save in your own Terminal only if needed.'})
         elif args.command == 'credentials':
             return config.credentials(args.action)
+        elif args.command == 'consent':
+            if args.action == 'enable':
+                output(consent.enable(args.root, files=args.files, directories=args.directories, profile=args.profile))
+            else:
+                if args.files or args.directories: raise AgentStopped('consent_scope')
+                output(consent.status(args.root) if args.action == 'status' else consent.revoke(args.root))
         elif args.command == 'prepare':
             overrides = {k: getattr(args, k) for k in ('timeout', 'max_turns', 'max_budget_usd', 'max_output_tokens')
                          if getattr(args, k) is not None}
             if args.effort is not None: overrides['effort'] = None if args.effort == 'default' else args.effort
-            limits = tasks.resolve_limits(args.profile, overrides)
+            profile = args.profile or (consent.require(args.root)['policy']['profile'] if args.use_consent else 'standard')
+            limits = tasks.resolve_limits(profile, overrides)
             output(tasks.create_plan(args.root, args.names, args.question, args.revision,
                                    args.constraints, args.test_evidence, limits,
-                                   focus_files=args.focus_files, profile=args.profile))
+                                   focus_files=args.focus_files, profile=profile, use_consent=args.use_consent))
         elif args.command == 'review':
             print('STARTING — Keychain may require Allow in macOS. Do not use Always Allow.', file=sys.stderr, flush=True)
             report = tasks.execute_plan(args.plan, args.plan_sha256,
-                       progress=lambda value: progress_notice(value, format))
+                       progress=lambda value: progress_notice(value, format), use_consent=args.use_consent)
             output(report)
             return 0 if report['status'] == 'COMPLETED' else 1
         elif args.command == 'report': output(tasks.read_report(args.id))

@@ -4,7 +4,7 @@
 
 Codex prepares a scoped review. Claude Code runs DeepSeek with read-only file tools. Findings return to the same Codex session for verification and action.
 
-[Website](https://deepseek-reviewer.outerepoch3.chatgpt.site) · [Download v1.3.0](https://github.com/liyunhui0707/deepseek-reviewer/releases/tag/v1.3.0) · [中文使用说明](docs/guide.zh-CN.md) · [Security & privacy](SECURITY.md) · [Release notes](CHANGELOG.md)
+[Website](https://deepseek-reviewer.outerepoch3.chatgpt.site) · [Downloads](https://github.com/liyunhui0707/deepseek-reviewer/releases) · [中文使用说明](docs/guide.zh-CN.md) · [Security & privacy](SECURITY.md) · [Release notes](CHANGELOG.md)
 
 ```text
 Your Codex session → approved snapshot → Claude Code Restricted + DeepSeek
@@ -31,7 +31,7 @@ This is **static review**, not an automatic acceptance test. Findings need verif
 
 Claude Code and Codex are separate products, **not included** in this distribution. Obtain them from their official publishers. Review [Claude's setup documentation](https://code.claude.com/docs/en/setup) for installation/version management. This product does not install, downgrade, upgrade or log into either CLI.
 
-This guide covers **v1.3.0**. Select matching v1.3.0 assets from the release list. Earlier versions do not support every command below; use their versioned documentation or upgrade first.
+This guide covers **v1.4.0**. Select matching v1.4.0 assets when available in the release list. Earlier versions do not support every command below; use their versioned documentation or upgrade first.
 
 ## Install
 
@@ -74,6 +74,31 @@ Or:
 The Skill selects a focused task, prepares a manifest, confirms any missing source-disclosure/cost authorization, invokes one review, and reads the Findings in the same conversation. Authorization already provided for the same scope is reused. Host command approvals still apply.
 
 The **Skill** tells Codex how to use the product; the **CLI** performs preparation, bounded execution and report retrieval. All projects use the same installed CLI. They do not need their own launcher or the historical audit project.
+
+### Optional project agreement
+
+Available starting in **v1.4.0**, this removes repeat conversation approval within an opted-in project, not macOS consent or host command approval. After installing v1.4.0 and updating its Skill, enroll once in your own Terminal, from the specific project. The example authorizes only `src/` and `tests/`; replace these with the smallest directories or repeated `--file` paths you intend to disclose:
+
+```sh
+deepseek-reviewer consent enable --root "$(pwd -P)" --directory src --directory tests --profile quick
+```
+
+Inspect the displayed project, scope, fixed DeepSeek endpoint/model and limits, then type `AUTHORIZE`. Directory consent includes future files under those directories. There is no whole-project/wildcard grant. This records no key and calls no model. It replaces any earlier agreement for that exact project directory. Do not run this example unchanged if those are not the directories you intend to authorize.
+
+Then saying **“用 DeepSeek 审核下”** or **“咨询下 DeepSeek”** authorizes one relevant task within that agreement. Codex still selects and checks an exact snapshot, announces files/limits/destination, and starts once without waiting for the same approval again. It must not start on its own, retry a failure, split into multiple paid runs or silently expand scope. Consultations use approved selected notes/source as evidence; do not embed unrelated private content in the question.
+
+The updated Skill uses `consent status --root PROJECT --json`, `prepare ... --use-consent`, then `review --plan RETURNED_PATH --plan-sha256 RETURNED_HASH --use-consent`. Preparation inherits the enrolled profile when omitted. File count/size ceilings are 6 files/48 KiB for quick or 12 files/96 KiB for standard. The corresponding existing time/turn/output/client-budget limits are enforced as consent ceilings; lower numeric overrides are allowed. These ceilings apply **per attempt**, not as a cumulative spending allowance. Mismatches, changed/revoked agreements, links, protected paths and detected secrets stop the consent flow before launch. Separate explicit authorization is needed for a new plan outside that agreement; it must not silently fall back.
+
+Inspect or revoke without calling a model:
+
+```sh
+deepseek-reviewer consent status --root "$(pwd -P)" --text
+deepseek-reviewer consent revoke --root "$(pwd -P)"
+```
+
+Agreements are private local records outside the repository, bound by hash to each plan and checked again before launch. Changing/re-enrolling invalidates previously bound plans. Changes refuse to overlap active reviews; revocation prevents future launches, it does not cancel a running process. Records can be changed by programs running as you: this is a reusable disclosure convention, **not proof of human intent or an OS security boundary**. The main agent must honor your current request, inspect selected materials and treat repository text as untrusted. Secret scanning remains incomplete. Enrollment does not alter Keychain ACLs; password/Allow dialogs can still occur and are not guaranteed to occur only once. No password-free credential component is added.
+
+### Explicit per-task approval
 
 For direct CLI use, prepare first. This step is offline:
 
@@ -134,6 +159,8 @@ The updated Skill status also reports competing `deepseek-review` entries in `~/
 | Retained / raw stdout / JSONL record | 4 MiB / 64 MiB / 1 MiB | fixed |
 
 `prepare --help` lists overrides. Low effort is the default effort setting; `--effort default` leaves that effort field unset. Thinking is independently requested disabled. Model/provider behavior may differ from a requested setting. Agent turns are **not HTTP requests**. Native retries/continuations may occur. Claude's cost estimate is **not DeepSeek's invoice or a hard billing cap**. Actual request count and provider charges can remain unknown.
+
+The product always supplies a positive client-budget threshold; omitting the flag retains the selected preset, it does not mean unlimited spending. A threshold stop can interrupt review and leave `PARTIAL` or no usable opinions. A safe partial report is preserved when available; no automatic budget increase or retry follows. Project consent does not remove this protection or guarantee delivery.
 
 Only the selected snapshot and task are intended for the fixed `deepseek-flash[1m]` route at `https://api.deepseek.com/anthropic`. No runtime data is sent to this project's website. Local snapshots, settings and reports live in a private per-user application directory and are retained for your inspection; they are not automatically deleted or uploaded. They can contain source. Do not commit or share them without review.
 

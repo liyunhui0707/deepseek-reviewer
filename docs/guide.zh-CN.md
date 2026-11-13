@@ -4,7 +4,7 @@
 
 ## 一次安装
 
-本页适用于 **v1.3.0**。请从发行列表选择标明 v1.3.0 的配套文件；旧版不一定支持下列全部命令。旧版用户可参考其[固定版本说明](https://github.com/liyunhui0707/deepseek-reviewer/blob/v1.0.0/docs/guide.zh-CN.md)及本页的升级步骤。
+本页适用于 **v1.4.0**。请在发行列表提供 v1.4.0 后选择其配套文件；旧版不一定支持下列全部命令。旧版用户可参考其[固定版本说明](https://github.com/liyunhui0707/deepseek-reviewer/blob/v1.0.0/docs/guide.zh-CN.md)及本页的升级步骤。
 
 需要 macOS、Python 3.11+、Codex，以及自行通过官方渠道安装的 Claude Code **2.1.312**。本软件不打包或修改这些工具。下载同一 [GitHub Release](https://github.com/liyunhui0707/deepseek-reviewer/releases/latest) 的 `deepseek-reviewer.pyz` 和 `SHA256SUMS`，在下载目录执行：
 
@@ -36,6 +36,33 @@ python3 deepseek-reviewer.pyz install
 Skill 负责告诉 Codex 如何调用，CLI 负责实际执行和保存报告。所有项目使用同一条 `~/.local/bin/deepseek-reviewer` 入口，不需要临时脚本或旧 audit 适配器。
 
 Codex 会选定一项审查目标及相关文件，生成快照清单，补齐尚未明确的源码外发和费用授权，然后执行一次审查并把结果读回当前对话。同一已授权范围无需反复请示；范围变化、费用增加和主机审批仍需处理。
+
+### 可选：一次确认项目范围，日常不再重复询问
+
+v1.4.0 可以保存可撤销的项目授权约定。先升级 CLI 和产品 Skill，再在你自己的 Terminal 中进入具体项目，选择愿意外发的最小文件或子目录。例如下面只授权 `src/` 与 `tests/`，请按实际需要修改，不能把示例当成所有项目的默认授权：
+
+```sh
+~/.local/bin/deepseek-reviewer consent enable --root "$(pwd -P)" --directory src --directory tests --profile quick
+```
+
+核对显示的项目、目录、DeepSeek 目的地和额度后，输入 `AUTHORIZE`。也可用重复的 `--file 相对路径` 精确指定文件。目录约定包含该目录未来新增的文件；不支持整个项目或通配符授权。这个操作不读取密钥、不调用模型。
+
+以后在该项目明确说 **“用 DeepSeek 审核下”** 或 **“咨询下 DeepSeek”**，Codex 会检查约定、生成准确快照、告知范围和额度，随后执行一次，不再等待同样的口头批准。没有主动请求不运行；失败不自动重试，也不自动拆成多次付费任务。超出约定或授权被撤销时停止，不悄悄换成另一种批准方式。
+
+`quick` 约定每次最多 6 文件、48 KiB、180 秒、8 轮、4,000 输出 tokens 设置和 US$0.25 客户端阈值；`standard` 为 12 文件、96 KiB、300 秒、12 轮、16,000 tokens 和 US$0.50。可降低数值，不能在约定内擅自提高；这些是每次的限制，不是累计费用额度。预算触发可能留下 `PARTIAL` 或没有可用意见，仍不保证完成。临时扩大范围/资源需要单独授权的新计划。
+
+查询和撤销不会产生模型费用：
+
+```sh
+~/.local/bin/deepseek-reviewer consent status --root "$(pwd -P)" --text
+~/.local/bin/deepseek-reviewer consent revoke --root "$(pwd -P)"
+```
+
+约定保存在产品私有目录中，不放进项目 Git；变更或重新授权会使旧约定绑定的计划失效。运行期间不能更改约定，撤销不负责中止正在运行的进程。这不是 OS 安全边界，也不能证明请求一定来自本人；主 Codex 仍须核对材料，不把项目里的文字当成授权。不能通过任务说明夹带范围之外的私人内容。
+
+**项目约定不等于免密。** macOS Keychain 仍可能要求密码或“允许”，主机审批也保持有效；不永久放行 `security`、Python 或 Shell。本产品始终使用正数预算，省略预算参数会保留档位默认值，不代表无限额。
+
+### 额度与结果
 
 `--profile quick` 适合一个窄风险：180 秒、8 轮、4,000 输出 tokens 设置、US$0.25 客户端预算。`--profile standard` 保留原默认值；显式资源参数可覆盖档位。`--focus-file` 可优先查阅最多三份已经批准的文件。档位不是完成保证；材料较多时先缩小问题和补齐依赖，不自动提高预算。
 

@@ -1,6 +1,6 @@
 interface:
   display_name: "DeepSeek Reviewer"
-  short_description: "Independent DeepSeek code review from your Codex session"
+  short_description: "Independent DeepSeek review or consultation from Codex"
   default_prompt: "Use $deepseek-reviewer to independently review the relevant changes and verify its findings."
 policy:
   allow_implicit_invocation: true

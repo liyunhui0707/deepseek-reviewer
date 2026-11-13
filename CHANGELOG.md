@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.0
+
+- Add optional, revocable project disclosure agreements through `consent enable/status/revoke`. Enrollment requires an interactive confirmation of exact file/subdirectory scope, the fixed DeepSeek route and a quick/standard resource allowance; no credentials or model calls are involved.
+- For an explicit user request within an enrolled agreement, the Skill announces the exact snapshot and limits and invokes one review without repeated conversation approval. `prepare --use-consent` binds the agreement hash; execution rechecks scope, current agreement and actual snapshot size before starting. Changes, revocation, replaced project roots and excess scope/resources stop the consent path without silent fallback.
+- Existing explicit per-task approval remains supported. Agreements are per attempt, not cumulative spending limits or proof of human intent. No automatic requests, retries or project enrollment are added.
+- Preserve Keychain consent, host approvals, Restricted tools, defaults and positive client-budget limits. This is not password-free access, OS isolation or a provider billing cap. Directory grants include future files and require deliberate selection.
+- Acceptance: 118 offline tests, including 14 consent tests, plus archive and disposable-install checks. No new paid-provider acceptance or Keychain access is claimed. Install the new CLI, explicitly update its managed Skill, and re-prepare old unexecuted plans; saved reports and consumed attempts remain unchanged.
+
 ## 1.3.0
 
 - Use one structured report contract for early opinions and the terminal result. Mark delivery complete only when the terminal report, observed reads, process exit and existing safety checks all pass; a fence label alone never decides completion.
