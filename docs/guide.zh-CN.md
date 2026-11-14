@@ -4,7 +4,7 @@
 
 ## 一次安装
 
-本页适用于已批准发布的 **v1.4.1**。请从 [v1.4.1 发行页](https://github.com/liyunhui0707/deepseek-reviewer/releases/tag/v1.4.1)下载配套文件；旧版不一定支持下列全部命令。旧版用户可参考其[固定版本说明](https://github.com/liyunhui0707/deepseek-reviewer/blob/v1.0.0/docs/guide.zh-CN.md)及本页的升级步骤。
+本页适用于已发布的 **v1.4.1**。请从 [v1.4.1 发行页](https://github.com/liyunhui0707/deepseek-reviewer/releases/tag/v1.4.1)下载配套文件；旧版不一定支持下列全部命令。旧版用户可参考其[固定版本说明](https://github.com/liyunhui0707/deepseek-reviewer/blob/v1.0.0/docs/guide.zh-CN.md)及本页的升级步骤。
 
 需要 macOS、Python 3.11+、Codex，以及自行通过官方渠道安装的 Claude Code **2.1.312 或 2.1.325**。2.1.325 已通过离线兼容检查，真实模型验收仍为 NOT TESTED；历史真实验收使用 2.1.312。本软件不打包或修改这些工具。下载同一 [GitHub Release](https://github.com/liyunhui0707/deepseek-reviewer/releases/latest) 的 `deepseek-reviewer.pyz` 和 `SHA256SUMS`，在下载目录执行：
 

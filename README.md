@@ -33,7 +33,7 @@ Version 1.4.1 adds explicitly checked **Claude Code 2.1.325** compatibility; ver
 
 Claude Code and Codex are separate products, **not included** in this distribution. Obtain them from their official publishers. Review [Claude's setup documentation](https://code.claude.com/docs/en/setup) for installation/version management. This product does not install, downgrade, upgrade or log into either CLI.
 
-This guide covers **v1.4.1**. Download matching assets once the approved patch is published. Earlier versions do not support every command below; use their versioned documentation or upgrade first.
+This guide covers the published **v1.4.1**. Download its matching release assets. Earlier versions do not support every command below; use their versioned documentation or upgrade first.
 
 ## Install
 
