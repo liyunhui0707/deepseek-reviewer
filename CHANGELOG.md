@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.1
+
+- Explicitly support existing Claude Code 2.1.325 alongside 2.1.312; record the inspected version while retaining exact executable fingerprints, required safety flags and confirmation-bound registration replacement. Unknown versions still stop.
+- Restore a supported migration path when the registered 2.1.312 executable is missing. Preview the replacement, then explicitly register it with the returned current-registration hash; the old registration is backed up. Existing plans must be prepared again. No Claude installation, credential change or automatic migration is performed.
+- Acceptance: 120 offline tests and archive/disposable-install checks, plus isolated version/help inspection of the real 2.1.325 executable. Real-provider/tool/report acceptance on 2.1.325 remains NOT TESTED; no paid review is included.
+
 ## 1.4.0
 
 - Add optional, revocable project disclosure agreements through `consent enable/status/revoke`. Enrollment requires an interactive confirmation of exact file/subdirectory scope, the fixed DeepSeek route and a quick/standard resource allowance; no credentials or model calls are involved.

@@ -17,6 +17,7 @@ from .runner import AgentStopped, private_write
 from .safety import scan_secrets, ReviewError
 
 TESTED_CLAUDE = '2.1.312'
+SUPPORTED_CLAUDE = (TESTED_CLAUDE, '2.1.325')
 SERVICE = 'io.github.liyunhui0707.deepseek-reviewer'
 ACCOUNT = 'deepseek-reviewer'
 ENDPOINT = 'https://api.deepseek.com/anthropic'
@@ -127,8 +128,10 @@ def _inspect_claude(claude):
                'CLAUDE_CONFIG_DIR': d, 'CLAUDE_SECURESTORAGE_CONFIG_DIR': d,
                'DISABLE_AUTOUPDATER': '1', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1'}
         version = subprocess.run([str(p), '--version'], env=env, capture_output=True, timeout=10, check=True)
-        if not re.fullmatch(re.escape(TESTED_CLAUDE) + r' \(Claude Code\)\s*', version.stdout.decode()):
+        match = re.fullmatch(r'(\d+\.\d+\.\d+) \(Claude Code\)\s*', version.stdout.decode())
+        if not match or match[1] not in SUPPORTED_CLAUDE:
             raise AgentStopped('unsupported_claude_version')
+        actual_version = match[1]
         help_result = subprocess.run([str(p), '--help'], env=env, capture_output=True, timeout=10, check=True)
         # Pinned 2.1.312 supports --max-turns but defines it with hideHelp().
         # Keep it in the review invocation; only visible flags belong here.
@@ -138,7 +141,7 @@ def _inspect_claude(claude):
             raise AgentStopped('missing_claude_capability')
     if fingerprint(p) != before:
         raise AgentStopped('claude_changed_during_registration')
-    value = {'schema': 1, 'claude': str(p), 'version': TESTED_CLAUDE, 'sha256': before,
+    value = {'schema': 1, 'claude': str(p), 'version': actual_version, 'sha256': before,
              'keychain': str(home() / 'Library/Keychains/login.keychain-db')}
     return value
 
@@ -202,7 +205,7 @@ def load_runtime():
 
 def _validate_runtime_shape(value):
     if (not isinstance(value, dict) or set(value) != {'schema', 'claude', 'version', 'sha256', 'keychain'}
-            or value['schema'] != 1 or value['version'] != TESTED_CLAUDE
+            or value['schema'] != 1 or value['version'] not in SUPPORTED_CLAUDE
             or not isinstance(value['claude'], str) or not Path(value['claude']).is_absolute()
             or not isinstance(value['sha256'], str) or not re.fullmatch('[a-f0-9]{64}', value['sha256'])
             or value['keychain'] != str(home() / 'Library/Keychains/login.keychain-db')):

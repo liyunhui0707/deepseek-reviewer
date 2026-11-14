@@ -131,6 +131,38 @@ emit({'type':'result','subtype':'success','is_error':False,'result':json.dumps(r
             with self.assertRaisesRegex(AgentStopped, 'managed_policy_present'):
                 config.check_policy()
 
+    def test_explicit_325_registration_preserves_312_and_verifies_new_fingerprint(self):
+        original = (config.app_home() / 'runtime.json').read_bytes()
+        other = self.root / 'synthetic-claude-325'
+        other.write_bytes(self.claude.read_bytes().replace(b'2.1.312', b'2.1.325'))
+        other.chmod(0o700)
+        with patch.object(config.platform, 'system', return_value='Darwin'):
+            preview = config.preview_registration(other)
+            self.assertEqual(preview['proposed']['version'], '2.1.325')
+            self.assertEqual((config.app_home() / 'runtime.json').read_bytes(), original)
+            with self.assertRaisesRegex(AgentStopped, 'runtime_confirmation_changed'):
+                config.register(other, replace=True, expected_sha256='0' * 64)
+            new = config.register(other, replace=True, expected_sha256=preview['current_sha256'])
+        self.assertEqual(new['version'], '2.1.325')
+        self.assertEqual(config.load_runtime(), new)
+        self.assertEqual((config.app_home() / 'runtime.previous.json').read_bytes(), original)
+        plan = self.plan()
+        report = tasks.execute_plan(plan['plan'], plan['sha256'])
+        self.assertEqual(report['status'], 'COMPLETED')
+        other.write_text('changed executable')
+        with self.assertRaisesRegex(AgentStopped, 'registered_claude_changed'):
+            config.load_runtime()
+
+    def test_325_still_requires_safety_flags_and_unknown_versions_stop(self):
+        source = self.claude.read_text().replace('2.1.312', '2.1.325')
+        with patch.object(config.platform, 'system', return_value='Darwin'):
+            self.claude.write_text(source.replace('--restricted ', ''))
+            with self.assertRaisesRegex(AgentStopped, 'missing_claude_capability'):
+                config._inspect_claude(self.claude)
+            self.claude.write_text(source.replace('2.1.325', '2.1.326'))
+            with self.assertRaisesRegex(AgentStopped, 'unsupported_claude_version'):
+                config._inspect_claude(self.claude)
+
     def test_snapshot_rejects_secret_paths_symlinks_hardlinks_and_traversal(self):
         outside = self.root / 'outside'; outside.write_text('synthetic sentinel')
         (self.repo / 'link.py').symlink_to(outside)
